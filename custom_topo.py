@@ -55,7 +55,7 @@ class SmartSwitchTopo(SingleSwitchTopo):
     def generate_traffic(self):
         """Generates traffic and listens on target machines"""
         p = self.hosts[3].popen([
-                'python3', './scapy_scripts/packet_generator.py'])
+                'python3', './packet_generator.py'])
         print(p.returncode)
 
     def quit(self):
