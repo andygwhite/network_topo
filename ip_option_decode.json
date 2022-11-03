@@ -1,0 +1,21 @@
+{
+    "30": {
+        "name": "Content Category",
+        "mapping": {
+            "0": false,
+            "1": "video",
+            "2": "web",
+            "3": "gaming",
+            "4": "social media",
+            "5": "content marketplace",
+            "6": "file sharing",
+            "7": "audio"
+        }
+    },
+    "94": {
+        "name": "Origin Timestamp"
+    },
+    "158": {
+        "name": "Priority Permissions"
+    }
+}

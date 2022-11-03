@@ -1,0 +1,4 @@
+{
+    "pcap_file": "./tester.pcap",
+    "delay": 1000
+}
