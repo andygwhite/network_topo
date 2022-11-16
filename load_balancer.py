@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tracemalloc import start
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
@@ -26,8 +25,17 @@ from ryu.lib.mac import haddr_to_int
 from ryu.lib.packet.ether_types import ETH_TYPE_IP
 from ryu.lib.packet import arp
 from ryu.lib.packet import ethernet
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from numpy import genfromtxt
+import pandas as pd
+import datetime
+import os
 import json
 
+FIXED_EPOCH_TIME = 1668036116
 
 class SimpleSwitch13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -44,9 +52,26 @@ class SimpleSwitch13(app_manager.RyuApp):
     SERVER3_MAC = '00:00:00:00:00:03'
     SERVER3_PORT = 3
 
+    USE_ML_MODEL = True
+    PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
+    # maps index of ML algorithm output to the corresponding data server
+    ML_SERVER_MAPPING = {
+        0: (SERVER1_IP, SERVER1_PORT),
+        1: (SERVER2_IP, SERVER2_PORT),
+        2: (SERVER3_IP, SERVER3_PORT)
+    }
+
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+        self.ml_model = None
+        if self.USE_ML_MODEL:
+            if not os.path.exists(self.PATH_TO_ML_MODEL):
+                raise FileNotFoundError("Cannot find ML model!")
+            self.ml_model = torch.load(self.PATH_TO_ML_MODEL)
+            self.ml_model.eval()
+            
+
         with open('./ip_option_decode.json', 'r') as f:
             self.ip_option_decode = json.load(f)
 
@@ -202,9 +227,11 @@ class SimpleSwitch13(app_manager.RyuApp):
         lists based on the given option size"""
         split_list = []
         # Get rid of all 0's
-        options = [opt for opt in options if opt != 0]
+        # options = [opt for opt in options if opt != 0]
         i = 0
         while i < len(options):
+            if options[i] == 0:
+                break
             print(f"Option type {options[i]}")
             opt_size = options[i + 1]
             print(f"Option size {opt_size}")
@@ -227,17 +254,58 @@ class SimpleSwitch13(app_manager.RyuApp):
             print(f"[WARNING]: {err}")
             return self.SERVER1_IP, self.SERVER1_PORT
         print("[INFO]:", options)
+        options_organized = {}
         for opt in options:
             if str(opt[0]) not in self.ip_option_decode:
                 print("[WARNING]: Info Type Not Recognized!")
                 return self.SERVER1_IP, self.SERVER1_PORT
             print(f"[INFO]: Option {opt} loaded: {self.ip_option_decode[str(opt[0])]['name']}, value: {str(opt[2])}")
+            options_organized[self.ip_option_decode[str(opt[0])]['name']] = float(opt[2])
         # If we made it this far, we can actually use the options
-        ml_input = [ip_header.src, options[0][2]]
+        # First need to process them into a numpy array
+        print(options_organized['timestamp'])
+        # Use one hot encoding
+        ml_input = np.array([
+            options_organized['priority permissions'] // 4 == 0,
+            options_organized['priority permissions'] // 4 == 1,
+            options_organized['priority permissions'] // 4 == 2,
+            options_organized['priority permissions'] // 4 == 3,
+            options_organized['priority permissions'] // 4 == 4,
+            options_organized['priority permissions'] // 4 == 5,
+            options_organized['priority permissions'] // 4 == 6,
+            options_organized['priority permissions'] // 4 == 7,
+            options_organized['priority permissions'] % 4 == 0,
+            options_organized['priority permissions'] % 4 == 1,
+            options_organized['priority permissions'] % 4 == 2,
+            options_organized['priority permissions'] % 4 == 3,
+            options_organized['category'] == 0,
+            options_organized['category'] == 1,
+            options_organized['category'] == 2,
+            options_organized['category'] == 3,
+            options_organized['category'] == 4,
+            options_organized['category'] == 5,
+            options_organized['category'] == 6,
+            options_organized['category'] == 7,
+            options_organized['timestamp'],
+            ip_header.total_length / 1500,
+            1, 0, 0, 0
+            # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
+        ])
         print("[DEBUG]: ML Input is", ml_input)
+        if self.USE_ML_MODEL:
+            return self.predict_using_lr(ml_input)
         if self.fake_ml(ml_input) == 2:
             return self.SERVER2_IP, self.SERVER2_PORT
         return self.SERVER1_IP, self.SERVER1_PORT
+
+    def predict_using_lr(self, ml_input):
+        # Clean up ml_input
+        # ml_input = torch.from_numpy(pd.get_dummies(ml_input, columns=[0,1,2,3,5]).values)
+        print(ml_input)
+        pred = self.ml_model(torch.from_numpy(ml_input).float()).data.numpy()
+        print(pred, pred.argmax())
+        return self.ML_SERVER_MAPPING[pred.argmax()]
+
 
     def fake_ml(self, ml_input):
         return ml_input[1]

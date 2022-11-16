@@ -1,4 +1,4 @@
 {
-    "pcap_file": "./tester.pcap",
-    "delay": 1000
+    "pcap_file": "./_training_modified.pcap",
+    "delay": 10
 }

@@ -1,6 +1,6 @@
 {
     "30": {
-        "name": "Content Category",
+        "name": "category",
         "mapping": {
             "0": false,
             "1": "video",
@@ -13,9 +13,9 @@
         }
     },
     "94": {
-        "name": "Origin Timestamp"
+        "name": "timestamp"
     },
     "158": {
-        "name": "Priority Permissions"
+        "name": "priority permissions"
     }
 }
