@@ -20,7 +20,12 @@ class PacketGeneratorJSON():
         the network."""
         for pkt in self.packets.values():
             print("attempting to send pkt", pkt)
-            send(pkt)
+            try:
+                send(pkt)
+            except OSError as err:
+                print(f"[WARNING]: Couldn't send packet: {err}")
+                time.sleep(0.01)
+                continue
             return
 
     def load_packets_from_json(self):
@@ -55,6 +60,10 @@ class PacketGeneratorPCAP:
             return True
         except StopIteration:
             return False
+        except OSError as oserr:
+            print(f"[WARNING]: {oserr}")
+            next(self.reader_iter)
+            return True
 
 
 @click.command
