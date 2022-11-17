@@ -48,11 +48,10 @@ class PacketGeneratorJSON():
 
 
 class PacketGeneratorPCAP:
-    def __init__(self, cfg):
-        self.cfg = cfg
-        if not os.path.exists(cfg["pcap_file"]):
+    def __init__(self, pcap_file):
+        if not os.path.exists(pcap_file):
             raise FileNotFoundError("Could not find PCAP file!")
-        self.reader_iter = iter(PcapReader(cfg["pcap_file"]))
+        self.reader_iter = iter(PcapReader(pcap_file))
 
     def send_next_packet(self):
         try:
@@ -67,13 +66,12 @@ class PacketGeneratorPCAP:
 
 
 @click.command
-@click.argument("cfgfile", default='./traffic_cfg.json')
-def cli(cfgfile):
-    with open(cfgfile, 'r') as f:
-        cfg = json.load(f)
-    gen = PacketGeneratorPCAP(cfg)
+@click.argument("pcap_file")
+@click.option("-d", "--delay", default=10)
+def cli(pcap_file, delay):
+    gen = PacketGeneratorPCAP(pcap_file)
     while gen.send_next_packet():
-        time.sleep(cfg['delay']/1000)
+        time.sleep(delay/1000)
     exit()
 
 
