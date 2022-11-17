@@ -1,0 +1,33 @@
+{
+    "generated_dataset": "./generated_dataset.csv",
+    "pcap_dataset_main_dir": "./Network-Traffic_Dataset_All",
+    "create_modified_pcap": true,
+    "length_threshold_cpu": 400,
+    "csv_dataset_output_dir": "./labeled_datasets",
+    "output_dataset_labels": ["cpu", "memory", "network"],
+    "app_categories": {
+        "Amazon Prime Video": 1,
+        "CyberGhost": 0,
+        "Deezer": 0,
+        "Discord": 1,
+        "Dropbox": 6,
+        "Epic Games": 3,
+        "Facebook": 4,
+        "Hotspot Shield": 0,
+        "iTunes": 7,
+        "Microsoft Teams": 1,
+        "ProtonVPN": 0,
+        "Skype": 1,
+        "Slack": 2,
+        "SoulseekQt": 6,
+        "Spotify": 7,
+        "Steam": 3,
+        "Telegram": 4,
+        "TuneIn": 7,
+        "TunnelBear": 0,
+        "Ultrasurf": 5,
+        "WhatsApp": 1,
+        "Zoom": 1
+    },
+    "destination_ip": "10.0.0.100"
+}
