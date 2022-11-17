@@ -1,1 +1,3 @@
 __pycache__/load_balancer.cpython-38.pyc
+Network-Traffic-Dataset-All/*
+*.pcap
