@@ -48,7 +48,7 @@ def cli():
             elif row['priority'] > 4:
                 row['cpu'] = 1
             elif row['category'] != 0:
-                # Video, file sharing -> memory
+                # Video, file sharing -> network
                 if row['category'] == 1 or row['category'] == 6:
                     row['network'] = 1
                 # Gaming -> CPU

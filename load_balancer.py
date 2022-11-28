@@ -37,6 +37,7 @@ import json
 
 FIXED_EPOCH_TIME = 1668036116
 
+
 class SimpleSwitch13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
@@ -60,11 +61,21 @@ class SimpleSwitch13(app_manager.RyuApp):
         1: (SERVER2_IP, SERVER2_PORT),
         2: (SERVER3_IP, SERVER3_PORT)
     }
+    # maps index of ML algorithm output to the corresponding workload type
+    ML_WORKLOAD_MAPPING = {
+        0: "cpu",
+        1: "network",
+        2: "memory"
+    }
 
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
         self.ml_model = None
+        # Clear the log file
+        if os.path.exists('./ryu.log'):
+            with open('./ryu.log', 'w') as f:
+                f.write('')
         if self.USE_ML_MODEL:
             if not os.path.exists(self.PATH_TO_ML_MODEL):
                 raise FileNotFoundError("Cannot find ML model!")
@@ -246,38 +257,27 @@ class SimpleSwitch13(app_manager.RyuApp):
         """Use ML on the IP header to determine the correct output server.
         Returns first host by default if there is not a good input in the ip_header"""
         if not ip_header.option:
-            print("[WARNING]: Options Not Found")
+            self.logger.warning("Options Not Found")
             return self.SERVER1_IP, self.SERVER1_PORT
         try:
             options = self.split_options(list(ip_header.option))
         except Exception as err:
             print(f"[WARNING]: {err}")
             return self.SERVER1_IP, self.SERVER1_PORT
-        print("[INFO]:", options)
+        self.logger.info(options)
         options_organized = {}
         for opt in options:
             if str(opt[0]) not in self.ip_option_decode:
                 print("[WARNING]: Info Type Not Recognized!")
                 return self.SERVER1_IP, self.SERVER1_PORT
-            print(f"[INFO]: Option {opt} loaded: {self.ip_option_decode[str(opt[0])]['name']}, value: {str(opt[2])}")
+                # BUG: This section fits timestamp into one value only!
+            self.logger.info(f"Option {opt} loaded: {self.ip_option_decode[str(opt[0])]['name']}, value: {str(opt[2])}")
             options_organized[self.ip_option_decode[str(opt[0])]['name']] = float(opt[2])
         # If we made it this far, we can actually use the options
         # First need to process them into a numpy array
-        print(options_organized['timestamp'])
+        # print(options_organized['timestamp'])
         # Use one hot encoding
         ml_input = np.array([
-            options_organized['priority permissions'] // 4 == 0,
-            options_organized['priority permissions'] // 4 == 1,
-            options_organized['priority permissions'] // 4 == 2,
-            options_organized['priority permissions'] // 4 == 3,
-            options_organized['priority permissions'] // 4 == 4,
-            options_organized['priority permissions'] // 4 == 5,
-            options_organized['priority permissions'] // 4 == 6,
-            options_organized['priority permissions'] // 4 == 7,
-            options_organized['priority permissions'] % 4 == 0,
-            options_organized['priority permissions'] % 4 == 1,
-            options_organized['priority permissions'] % 4 == 2,
-            options_organized['priority permissions'] % 4 == 3,
             options_organized['category'] == 0,
             options_organized['category'] == 1,
             options_organized['category'] == 2,
@@ -286,12 +286,27 @@ class SimpleSwitch13(app_manager.RyuApp):
             options_organized['category'] == 5,
             options_organized['category'] == 6,
             options_organized['category'] == 7,
-            options_organized['timestamp'],
+            options_organized['permissions priority'] // 16 == 0,
+            options_organized['permissions priority'] // 16 == 1,
+            options_organized['permissions priority'] // 16 == 2,
+            options_organized['permissions priority'] // 16 == 3,
+            options_organized['permissions priority'] % 16 == 0,
+            options_organized['permissions priority'] % 16 == 1,
+            options_organized['permissions priority'] % 16 == 2,
+            options_organized['permissions priority'] % 16 == 3,
+            options_organized['permissions priority'] % 16 == 4,
+            options_organized['permissions priority'] % 16 == 5,
+            options_organized['permissions priority'] % 16 == 6,
+            options_organized['permissions priority'] % 16 == 7,
+            options_organized['timestamp'] // 16 / 13,
             ip_header.total_length / 1500,
-            1, 0, 0, 0
+            options_organized['timestamp'] % 16 == 0,
+            options_organized['timestamp'] % 16 == 1,
+            options_organized['timestamp'] % 16 == 2,
+            options_organized['timestamp'] % 16 == 3,
             # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
         ])
-        print("[DEBUG]: ML Input is", ml_input)
+        self.logger.info(f"ML Input is: {ml_input.tolist()}")
         if self.USE_ML_MODEL:
             return self.predict_using_lr(ml_input)
         if self.fake_ml(ml_input) == 2:
@@ -299,11 +314,9 @@ class SimpleSwitch13(app_manager.RyuApp):
         return self.SERVER1_IP, self.SERVER1_PORT
 
     def predict_using_lr(self, ml_input):
-        # Clean up ml_input
-        # ml_input = torch.from_numpy(pd.get_dummies(ml_input, columns=[0,1,2,3,5]).values)
-        print(ml_input)
         pred = self.ml_model(torch.from_numpy(ml_input).float()).data.numpy()
-        print(pred, pred.argmax())
+        self.logger.info(f"Prediction tensor: {pred}")
+        self.logger.info(f"PREDICTION: {self.ML_WORKLOAD_MAPPING[pred.argmax()]}")
         return self.ML_SERVER_MAPPING[pred.argmax()]
 
 

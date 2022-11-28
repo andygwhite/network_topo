@@ -1,3 +1,9 @@
 {
-    "num_hosts": 4
+    "num_hosts": 4,
+    "default_pcap_file": "./_training_modified",
+    "experiment_files": {
+        "cpu": "/home/mininet/network_topo/labeled_datasets/validation/cpu.pcap",
+        "network": "/home/mininet/network_topo/labeled_datasets/validation/network.pcap", 
+        "memory": "/home/mininet/network_topo/labeled_datasets/validation/memory.pcap"
+    }
 }

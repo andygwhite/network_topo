@@ -1,10 +1,11 @@
 {
     "generated_dataset": "./generated_dataset.csv",
-    "pcap_dataset_main_dir": "./Network-Traffic_Dataset_All",
+    "pcap_dataset_main_dir": "./Network-Traffic-Dataset-All",
     "create_modified_pcap": true,
     "length_threshold_cpu": 400,
-    "csv_dataset_output_dir": "./labeled_datasets",
-    "output_dataset_labels": ["cpu", "memory", "network"],
+    "dataset_output_dir": "./labeled_datasets",
+    "output_dataset_labels": ["cpu", "network", "memory"],
+    "csv_fieldnames": ["category","permissions","priority","tiq","packet_length", "tod","cpu","network","memory"],
     "app_categories": {
         "Amazon Prime Video": 1,
         "CyberGhost": 0,
