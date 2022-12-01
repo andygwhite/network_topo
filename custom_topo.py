@@ -32,7 +32,16 @@ class SmartSwitchTopo(SingleSwitchTopo):
         self.hosts = []
         for i in range(1, self.cfg["num_hosts"] + 1):
             self.hosts.append(self.net.get(f'h{i}'))
-        # print(self.hosts[1].cmd(['ping', '-c', '1', '10.0.0.2']))
+        print("Attempting to set MTU for host machine to max packet size")
+        for i in range(1, 5):
+            p = subprocess.Popen(f"sudo ifconfig s1-eth{i} mtu 65535", shell=True, stdout=subprocess.PIPE)
+            if p.communicate()[1] is not None:
+                print(f"[WARNING]: Failed to change MTU size on s1-eth{i}. Packets must not exceed 1500 bytes")
+                break
+        for i, host in enumerate(self.hosts):
+            host.cmd(f"sudo ifconfig h{i+1}-eth0 mtu 65535")
+        else:
+            print("MTU Changed Successfully")
         choice = None
         while True:
             print('Please select an option')
@@ -54,7 +63,16 @@ class SmartSwitchTopo(SingleSwitchTopo):
             if choice == '3':
                 CLI(self.net, stdin=sys.stdin, script="./open_xterms.sh")
             if choice == '4':
-                print(self.run_experiment())
+                results = self.run_experiment()
+                print(results)
+                total_count = 0
+                total_correct = 0
+                for exp in ["cpu", "memory", "network"]:
+                    for label in ["cpu", "memory", "network"]:
+                        total_count += results[exp][label]
+                        if exp == label:
+                            total_correct += results[exp][label]
+                print(f"Total Accuracy: {100*total_correct/total_count}%")
             else:
                 print(choice, 'is not a valid option')
 
@@ -79,7 +97,7 @@ class SmartSwitchTopo(SingleSwitchTopo):
                 print("ERROR: Could not find file", fname)
                 continue
             p = self.hosts[3].cmd([
-                'python3', './packet_generator.py', fname, '-d1'])
+                'python3', './packet_generator.py', fname])
             for prediction_result in ["cpu", "network", "memory"]:
                 p = subprocess.Popen(f'grep "PREDICTION: {prediction_result}" ./ryu.log | wc -l', shell=True, stdout=subprocess.PIPE)
                 results[exp][prediction_result] = int(p.communicate()[0])
