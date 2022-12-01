@@ -14,6 +14,7 @@ class PacketGeneratorJSON():
         self.cfg = cfg
         self.packets = {}
         self.load_packets()
+        self.counter = 1
 
     def send_all_packets(self):
         """Use scapy to send all packets across
@@ -52,17 +53,23 @@ class PacketGeneratorPCAP:
         if not os.path.exists(pcap_file):
             raise FileNotFoundError("Could not find PCAP file!")
         self.reader_iter = iter(PcapReader(pcap_file))
+        self.counter = 1
 
     def send_next_packet(self):
-        try:
-            send(next(self.reader_iter))
-            return True
-        except StopIteration:
-            return False
-        except OSError as oserr:
-            print(f"[WARNING]: {oserr}")
-            next(self.reader_iter)
-            return True
+        # try:
+        pkt = next(self.reader_iter)
+        send(pkt)
+        print(self.counter)
+        self.counter += 1
+        return True
+        # except StopIteration:
+        #     return False
+        # except OSError as oserr:
+        #     print(f"[WARNING]: {oserr}")
+        #     print(len(pkt))
+        #     exit()
+        #     next(self.reader_iter)
+        #     return True
 
 
 @click.command
