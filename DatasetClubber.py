@@ -72,6 +72,7 @@ class Clubber:
         # Add csv file for all
         csv_training_writers['all'] = csv.DictWriter(open(os.path.join(self.cfg["dataset_output_dir"], 'training', f'all.csv'), 'w'), fieldnames=fieldnames)
         csv_validation_writers['all'] = csv.DictWriter(open(os.path.join(self.cfg["dataset_output_dir"], 'validation', f'all.csv'), 'w'), fieldnames=fieldnames)
+        csv_validation_writers['all'].writeheader()
         for dir in os.listdir(self.cfg["pcap_dataset_main_dir"]):
             self.club_pcaps(
                 os.path.join(os.path.abspath(self.cfg["pcap_dataset_main_dir"]), dir),
@@ -124,7 +125,7 @@ class Clubber:
                         if gen_output:
                             options = [
                                 IPOption(b'\x1e\x03%1b' % (int(dp['category']).to_bytes(1, 'big'))),
-                                IPOption(b'\x5e\x03%1b' % ((int(int(dp['tiq']) / 3600 * 16) + int(dp['tod'])).to_bytes(1, 'big'))),
+                                IPOption(b'\x5e\x03%1b' % ((int(int(dp['tiq']) * 16) + int(dp['tod'])).to_bytes(1, 'big'))),
                                 IPOption(b'\x9e\x03%1b' % ((int(dp['permissions']) * 16 + int(dp['priority'])).to_bytes(1, 'big'))),
                             ]
                             setattr(pkt, 'options', options)
