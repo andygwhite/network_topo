@@ -15,12 +15,12 @@ FIXED_EPOCH_TIME = 1668036116
 POSSIBLE_PRIORITY = range(8)
 POSSIBLE_CATEGORY = range(8)
 POSSIBLE_PERMISSIONS = range(4)
-POSSIBLE_TIQ = range(0, 48000, 3600)
+POSSIBLE_TIQ = range(0, 14)
 POSSIBLE_TOD = range(4)
 # POSSIBLE_PACKET_LENGTH = range(50, 1400, 200)
 @click.command()
 def cli():
-    with open('generated_dataset.csv', 'w') as f:
+    with open('generated_dataset_DEMO.csv', 'w') as f:
         datawriter = csv.DictWriter(f, fieldnames=['category', 'permissions', 'priority', 'tiq', 'tod', 'network', 'memory', 'cpu'], delimiter=',', quotechar='|')
         datawriter.writeheader()
         for row in itertools.product(POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_CATEGORY, POSSIBLE_TIQ, POSSIBLE_TOD):
@@ -36,7 +36,7 @@ def cli():
                 'network': 0,
                 'memory': 0
             }
-            # Permissions: 1: CPU,2: network, 3: memory, 0: unknown
+            # Permissions: 1: CPU, 2: network, 3: memory, 0: unknown
             if row['permissions'] != 0:
                 if row['permissions'] == 1:
                     row['cpu'] = 1
@@ -47,23 +47,31 @@ def cli():
             # Priority: greater than 4 gets CPU
             elif row['priority'] > 4:
                 row['cpu'] = 1
+            # Priority greater than 2 gets network
+            elif row['priority'] > 2:
+                row['network'] = 1
             elif row['category'] != 0:
-                # Video, file sharing -> network
-                if row['category'] == 1 or row['category'] == 6:
+                # SPEEDY TASKS -> Network
+                # audio, web, content marketplaces, social media
+                # PROCESS INTENSIVE TASKS -> CPU
+                # Gaming, 
+                # LARGE FILE SIZES (Not fast) -> Memory
+                # Video, File Sharing
+                if row['category'] in [2, 4, 5, 7]:
                     row['network'] = 1
                 # Gaming -> CPU
-                elif row['category'] == 3:
+                elif row['category'] in [3]:
                     row['cpu'] = 1
                 else:
                     row['memory'] = 1
-            elif row['tiq'] > 24000:
-                row['cpu'] = 1
+            elif row['tiq'] > 2:
+                row['network'] = 1
+            # If the time of day is in the last segment, prefer to send to
+            # memory server (to keep network more open to higher priority)
+            elif row['tod'] == 3:
+                row['memory'] = 1
             # If it falls through, packet length will be used
-            # else:
-            #     row['memory'] = 1
-            # Time of day is still tricky...
-            # elif row[4] == 3:
-            #     row['memory'] = 1
+            # This is applied in the DatasetClubber script
             datawriter.writerow(row)
     
         
