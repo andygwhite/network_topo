@@ -26,6 +26,7 @@ from ryu.lib.packet.ether_types import ETH_TYPE_IP
 from ryu.lib.packet import arp
 from ryu.lib.packet import ethernet
 import numpy as np
+from numpy import genfromtxt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -34,9 +35,8 @@ import pandas as pd
 import datetime
 import os
 import json
-
+import sys
 FIXED_EPOCH_TIME = 1668036116
-
 
 class SimpleSwitch13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -54,7 +54,10 @@ class SimpleSwitch13(app_manager.RyuApp):
     SERVER3_PORT = 3
 
     USE_ML_MODEL = True
-    PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
+    PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model_DEMO.pt'
+    # TESTING
+    CSV_CHECK = iter(genfromtxt("/home/mininet/network_topo/labeled_datasets_DEMO/validation/network.csv", delimiter=','))
+    
     # maps index of ML algorithm output to the corresponding data server
     ML_SERVER_MAPPING = {
         0: (SERVER1_IP, SERVER1_PORT),
@@ -72,6 +75,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
         self.ml_model = None
+        self.packet_counter = 1
         # Clear the log file
         if os.path.exists('./ryu.log'):
             with open('./ryu.log', 'w') as f:
@@ -307,6 +311,46 @@ class SimpleSwitch13(app_manager.RyuApp):
             # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
         ])
         self.logger.info(f"ML Input is: {ml_input.tolist()}")
+        # TESTING
+        # See if this matches the current input
+        csv_check = next(self.CSV_CHECK)
+        csv_check = np.array([
+            csv_check[0] == 0,
+            csv_check[0] == 1,
+            csv_check[0] == 2,
+            csv_check[0] == 3,
+            csv_check[0] == 4,
+            csv_check[0] == 5,
+            csv_check[0] == 6,
+            csv_check[0] == 7,
+            csv_check[1] == 0,
+            csv_check[1] == 1,
+            csv_check[1] == 2,
+            csv_check[1] == 3,
+            csv_check[2] == 0,
+            csv_check[2] == 1,
+            csv_check[2] == 2,
+            csv_check[2] == 3,
+            csv_check[2] == 4,
+            csv_check[2] == 5,
+            csv_check[2] == 6,
+            csv_check[2] == 7,
+            csv_check[3] / (13*3600),
+            ip_header.total_length / 1500,
+            csv_check[5] == 0,
+            csv_check[5] == 1,
+            csv_check[5] == 2,
+            csv_check[5] == 3,
+            # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
+        ])
+        self.logger.info(csv_check)
+        self.logger.info(f"{self.packet_counter}")
+        self.packet_counter += 1
+        self.logger.info(f"Matches CSV: {csv_check == ml_input}")
+        if not (csv_check == ml_input).all():
+            quit()
+        self.logger.info(f"Prediction from CSV: {self.ml_model(torch.from_numpy(csv_check).float()).data.numpy()}")
+        # END TESTING
         if self.USE_ML_MODEL:
             return self.predict_using_lr(ml_input)
         if self.fake_ml(ml_input) == 2:
@@ -365,3 +409,6 @@ class SimpleSwitch13(app_manager.RyuApp):
                             str(in_port) + "====>")
         packet_handled = True
         return packet_handled
+
+def quit():
+    sys.exit()
