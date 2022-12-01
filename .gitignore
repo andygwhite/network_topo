@@ -2,4 +2,7 @@ __pycache__/load_balancer.cpython-38.pyc
 Network-Traffic-Dataset-All/*
 *.pcap
 *.log
-generated_dataset.csv
+*.csv
+*.json
+*/*.csv
+*/*/*.csv
