@@ -56,20 +56,19 @@ class PacketGeneratorPCAP:
         self.counter = 1
 
     def send_next_packet(self):
-        # try:
-        pkt = next(self.reader_iter)
-        send(pkt)
-        print(self.counter)
-        self.counter += 1
-        return True
-        # except StopIteration:
-        #     return False
-        # except OSError as oserr:
-        #     print(f"[WARNING]: {oserr}")
-        #     print(len(pkt))
-        #     exit()
-        #     next(self.reader_iter)
-        #     return True
+        try:
+            pkt = next(self.reader_iter)
+            send(pkt)
+            print(self.counter)
+            self.counter += 1
+            return True
+        except StopIteration:
+            return False
+        except OSError as oserr:
+            print(f"[WARNING]: {oserr}")
+            print(len(pkt))
+            next(self.reader_iter)
+            return True
 
 
 @click.command

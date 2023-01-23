@@ -22,6 +22,7 @@ Inputs:
     - PCAP Dataset, divided into folders with the application name
 """
 
+import random
 from scapy.all import PcapReader, PcapWriter, IP, IPOption, NoPayload
 import click
 import os
@@ -48,12 +49,8 @@ class Clubber:
         if not os.path.exists(self.cfg["dataset_output_dir"]):
             os.mkdir(self.cfg["dataset_output_dir"])
         self.load_generated_dataset()
-        # self.simple_dataset = {
-        #     "training": {lbl: [] for lbl in self.cfg["output_dataset_labels"]},
-        #     "validation": {lbl: [] for lbl in self.cfg["output_dataset_labels"]}}
         print("Generated dataset loaded")
         # Create Pcap writers
-        pcap_training_writers = dict()
         pcap_validation_writers = dict()
         csv_training_writers = dict()
         csv_validation_writers = dict()
@@ -61,8 +58,7 @@ class Clubber:
         for dataset_type in ['training', 'validation']:
             if not os.path.exists(os.path.join(self.cfg["dataset_output_dir"], dataset_type)):
                 os.mkdir(os.path.join(self.cfg["dataset_output_dir"], dataset_type))
-        for label in ['cpu', 'network', 'memory']:
-            pcap_training_writers[label] = PcapWriter(os.path.join(self.cfg["dataset_output_dir"], 'training', f'{label}.pcap'), append=True)
+        for label in ['cpu', 'network', 'memory', 'all']:
             pcap_validation_writers[label] = PcapWriter(os.path.join(self.cfg["dataset_output_dir"], 'validation', f'{label}.pcap'), append=True)
             # with open(os.path.join(self.cfg["dataset_output_dir"], 'training', f'{label}.csv')) as f:
             csv_training_file = open(os.path.join(self.cfg["dataset_output_dir"], 'training', f'{label}.csv'), 'w')
@@ -70,14 +66,13 @@ class Clubber:
             csv_validation_file = open(os.path.join(self.cfg["dataset_output_dir"], 'validation', f'{label}.csv'), 'w')
             csv_validation_writers[label] = csv.DictWriter(csv_validation_file, fieldnames=fieldnames)
         # Add csv file for all
-        csv_training_writers['all'] = csv.DictWriter(open(os.path.join(self.cfg["dataset_output_dir"], 'training', f'all.csv'), 'w'), fieldnames=fieldnames)
-        csv_validation_writers['all'] = csv.DictWriter(open(os.path.join(self.cfg["dataset_output_dir"], 'validation', f'all.csv'), 'w'), fieldnames=fieldnames)
+        # csv_training_writers['all'] = csv.DictWriter(open(os.path.join(self.cfg["dataset_output_dir"], 'training', f'all.csv'), 'w'), fieldnames=fieldnames)
+        # csv_validation_writers['all'] = csv.DictWriter(open(os.path.join(self.cfg["dataset_output_dir"], 'validation', f'all.csv'), 'w'), fieldnames=fieldnames)
         csv_validation_writers['all'].writeheader()
         for dir in os.listdir(self.cfg["pcap_dataset_main_dir"]):
             self.club_pcaps(
                 os.path.join(os.path.abspath(self.cfg["pcap_dataset_main_dir"]), dir),
-                str(self.cfg['app_categories'][dir]),
-                pcap_training_writers,
+                self.cfg['app_categories'][dir],
                 pcap_validation_writers,
                 csv_training_writers,
                 csv_validation_writers)
@@ -86,25 +81,81 @@ class Clubber:
         # self.output_simple_dataset()
 
     def load_generated_dataset(self):
-        # Load the entire generated dataset into memory
-        self.generated_dataset = {
-            str(cat): [] for cat in set(self.cfg["app_categories"].values())}
-        with open(self.cfg["generated_dataset"], 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                self.generated_dataset[row['category']].append(row)
+        # Create a generated dataset
+        # self.generated_dataset = {
+        #     str(cat): [] for cat in set(self.cfg["app_categories"].values())}
+        # with open(self.cfg["generated_dataset"], 'r') as f:
+        #     reader = csv.DictReader(f)
+        #     # Skip the header
+        #     next(reader)
+        #     for row in reader:
+        #         self.generated_dataset[row['category']].append(row)
+        POSSIBLE_PRIORITY = range(8)
+        POSSIBLE_CATEGORY = range(8)
+        POSSIBLE_PERMISSIONS = range(4)
+        POSSIBLE_TIQ = range(0, 14)
+        POSSIBLE_TOD = range(4)
+        # This will hold generated datasets queried by their 
+        self.generated_dataset = {category_num: [] for category_num in POSSIBLE_CATEGORY}
+        print(self.generated_dataset)
+        for row in itertools.product(POSSIBLE_CATEGORY, POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_TIQ, POSSIBLE_TOD):
+            # Algorithm to determine ranking
+            # Note that this now includes network intensive
+            row = {
+                'category': row[0],
+                'permissions': row[1],
+                'priority': row[2],
+                'tiq': row[3],
+                'tod': row[4],
+                'cpu': 0,
+                'network': 0,
+                'memory': 0
+            }
+            # Permissions: 1: CPU, 2: network, 3: memory, 0: unknown
+            if row['permissions'] != 0:
+                if row['permissions'] == 1:
+                    row['cpu'] = 1
+                elif row['permissions'] == 2:
+                    row['network'] = 1
+                else:
+                    row['memory'] = 1
+            # Priority: greater than 4 gets CPU
+            elif row['priority'] > 4:
+                row['cpu'] = 1
+            # Priority greater than 2 gets network
+            elif row['priority'] > 2:
+                row['network'] = 1
+            elif row['category'] != 0:
+                # SPEEDY TASKS -> Network
+                # audio, web, content marketplaces, social media
+                # PROCESS INTENSIVE TASKS -> CPU
+                # Gaming, 
+                # LARGE FILE SIZES (Not fast) -> Memory
+                # Video, File Sharing
+                if row['category'] in [2, 4, 5, 7]:
+                    row['network'] = 1
+                # Gaming -> CPU
+                elif row['category'] in [3]:
+                    row['cpu'] = 1
+                else:
+                    row['memory'] = 1
+            elif row['tiq'] > 2:
+                row['network'] = 1
+            # If the time of day is in the last segment, prefer to send to
+            # memory server (to keep network more open to higher priority)
+            elif row['tod'] == 3:
+                row['memory'] = 1
+            # If it falls through, packet length will be used
+            # Now add this to the proper list in the dataset
+            self.generated_dataset[row['category']].append(row)
 
-    def club_pcaps(self, pcap_dir, category, pcap_training_writers, pcap_validation_writers, csv_training_writers, csv_validation_writers):
+    def club_pcaps(self, pcap_dir, category, pcap_validation_writers, csv_training_writers, csv_validation_writers):
         """Function to pull in pcap data from all pcaps in
         a directory and then output a modified pcap combining everything"""
         print("Looking in", pcap_dir)
-        # training_output_file = os.path.join(pcap_dir, "_training_modified.pcap")
-        # validation_output_file = os.path.join(pcap_dir, "_validation_modified.pcap")
-        gen_output = self.cfg["create_modified_pcap"]
-        # if gen_output:
-        #     training_writer = PcapWriter(training_output_file, append=True)
-        #     validation_writer = PcapWriter(validation_output_file, append=True)
-        generated_dataset_iter = itertools.cycle(self.generated_dataset[category])
+        # Allow user to specify if a PCAP should be generated
+        gen_pcap_output = self.cfg["create_modified_pcap"]
+        # generated_dataset_iter = itertools.cycle(self.generated_dataset[category])
         for f in absoluteFilePaths(pcap_dir):
             # if f == training_output_file or f == validation_output_file:
             #     continue
@@ -113,20 +164,23 @@ class Clubber:
                 # Place every 5th packet in validation bin
                 if MAX_PACKETS_PER_FILE < 0 or i >= MAX_PACKETS_PER_FILE:
                     break
+                # Clear line
+                print("", end='\r')
                 print(f"working on packet {i}", end='\r')
                 is_validation = (i % 5 == 0)
-                dp = copy.copy(next(generated_dataset_iter))
+                generated_datapoint = copy.copy(random.choice(self.generated_dataset[category]))
                 while not isinstance(pkt, NoPayload):
                     if isinstance(pkt, (IP)):
-                        # Pull out packet length
-                        dp['packet_length'] = getattr(pkt, 'len')
+                        """This will club together a packet from the PCAP with a generated datapoint
+                        and write the output to both the PCAP and CSV file"""
+                        generated_datapoint['packet_length'] = getattr(pkt, 'len')
                         # Change to the destination IP address
-                        timestamp = FIXED_EPOCH_TIME - int(dp["tiq"])
-                        if gen_output:
+                        # timestamp = FIXED_EPOCH_TIME - int(generated_datapoint["tiq"])
+                        if gen_pcap_output:
                             options = [
-                                IPOption(b'\x1e\x03%1b' % (int(dp['category']).to_bytes(1, 'big'))),
-                                IPOption(b'\x5e\x03%1b' % ((int(int(dp['tiq']) * 16) + int(dp['tod'])).to_bytes(1, 'big'))),
-                                IPOption(b'\x9e\x03%1b' % ((int(dp['permissions']) * 16 + int(dp['priority'])).to_bytes(1, 'big'))),
+                                IPOption(b'\x1e\x03%1b' % (int(generated_datapoint['category']).to_bytes(1, 'big'))),
+                                IPOption(b'\x5e\x03%1b' % ((int(int(generated_datapoint['tiq']) * 16) + int(generated_datapoint['tod'])).to_bytes(1, 'big'))),
+                                IPOption(b'\x9e\x03%1b' % ((int(generated_datapoint['permissions']) * 16 + int(generated_datapoint['priority'])).to_bytes(1, 'big'))),
                             ]
                             setattr(pkt, 'options', options)
                             setattr(pkt, 'dst', self.cfg['destination_ip'])
@@ -135,27 +189,31 @@ class Clubber:
                             del pkt['IP'].ihl
                         break
                     pkt = pkt.payload
-                # Check if dp has unknown label, if so use packet length
-                if dp['cpu'] == '0' and dp['network'] == '0' and dp['memory'] == '0':
-                    if int(dp['packet_length']) < self.cfg['length_threshold_cpu']:
-                        dp['cpu'] = '1'
+                # Check if generated_datapoint has unknown label, if so use packet length
+                if generated_datapoint['cpu'] == 0 and generated_datapoint['network'] == 0 and generated_datapoint['memory'] == 0:
+                    if int(generated_datapoint['packet_length']) < self.cfg['length_threshold_cpu']:
+                        generated_datapoint['network'] = 1
                     else:
-                        dp['memory'] = '1'
-                # del dp['label']
+                        generated_datapoint['memory'] = 1
+                # del generated_datapoint['label']
                 # separate out CSV 
-                label = 'cpu'
-                if dp['memory'] == '1':
+                if generated_datapoint['memory'] == 1:
                     label = 'memory'
-                elif dp['network'] == '1':
+                elif generated_datapoint['network'] == 1:
                     label = 'network'
-                csv_validation_writers[label].writerow(dp) if is_validation else csv_training_writers[label].writerow(dp)
-                csv_validation_writers['all'].writerow(dp) if is_validation else csv_training_writers['all'].writerow(dp)
+                elif generated_datapoint['cpu'] == 1:
+                    label = 'cpu'
+                else:
+                    raise Exception("Cannot label!")
+                csv_validation_writers[label].writerow(generated_datapoint) if is_validation else csv_training_writers[label].writerow(generated_datapoint)
+                csv_validation_writers['all'].writerow(generated_datapoint) if is_validation else csv_training_writers['all'].writerow(generated_datapoint)
                 # if is_validation:
-                #     self.simple_dataset["validation"][label].append(dp)
+                #     self.simple_dataset["validation"][label].append(generated_datapoint)
                 # else:
-                #     self.simple_dataset["training"][label].append(dp)
-                if gen_output and is_validation:
+                #     self.simple_dataset["training"][label].append(generated_datapoint)
+                if gen_pcap_output and is_validation:
                     pcap_validation_writers[label].write(pkt)
+                    pcap_validation_writers['all'].write(pkt)
                 i += 1
 
     # def output_simple_dataset(self):
@@ -172,8 +230,8 @@ class Clubber:
     #             with open(output_csv, 'w') as csvfile:
     #                 writer = csv.DictWriter(csvfile, fieldnames=list(data[0].keys()))
     #                 writer.writeheader()
-    #                 for dp in data:
-    #                     writer.writerow(dp)
+    #                 for generated_datapoint in data:
+    #                     writer.writerow(generated_datapoint)
 
 
 @click.command()

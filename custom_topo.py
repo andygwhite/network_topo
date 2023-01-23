@@ -2,6 +2,7 @@ from mininet.net import Mininet
 from mininet.node import Controller, RemoteController
 from mininet.cli import CLI
 from mininet.topo import SingleSwitchTopo
+import pandas as pd
 import json
 import sys
 import subprocess
@@ -14,11 +15,10 @@ RYU_LOGFILE = './ryu.log'
 class SmartSwitchTopo(SingleSwitchTopo):
     """Class to manage the custom topology for this project.
     builds off of a simple single topo with k=10
-    Hosts 1 and 2 act as the target servers,
-    Hosts 3 to 10 act as normal traffic generators.
+    Hosts 1-3 act as the target servers,
+    Host 4 acts as a traffic generator.
     This script will handle generating traffic by
-    sending commands to each server to run custom scripts.
-    It will also keep tabs on the tcpdump from servers h1 and h2."""
+    sending commands to each server to run custom scripts."""
     def __init__(self, cfg_filename='./topo_cfg.json'):
         """Wrapper for single topo init.
         Allows for specifying number of servers"""
@@ -56,15 +56,15 @@ class SmartSwitchTopo(SingleSwitchTopo):
                 self.quit()
             if choice == 'q':
                 self.quit()
-            if choice == '1':
+            elif choice == '1':
                 CLI(self.net)
-            if choice == '2':
+            elif choice == '2':
                 self.generate_traffic()
-            if choice == '3':
+            elif choice == '3':
                 CLI(self.net, stdin=sys.stdin, script="./open_xterms.sh")
-            if choice == '4':
+            elif choice == '4':
                 results = self.run_experiment()
-                print(results)
+                print(pd.DataFrame.from_dict(results).to_markdown())
                 total_count = 0
                 total_correct = 0
                 for exp in ["cpu", "memory", "network"]:
@@ -72,6 +72,8 @@ class SmartSwitchTopo(SingleSwitchTopo):
                         total_count += results[exp][label]
                         if exp == label:
                             total_correct += results[exp][label]
+                print("Correct:", total_correct)
+                print("Total count:", total_count)
                 print(f"Total Accuracy: {100*total_correct/total_count}%")
             else:
                 print(choice, 'is not a valid option')
@@ -85,7 +87,8 @@ class SmartSwitchTopo(SingleSwitchTopo):
         # return p.returncode
 
     def run_experiment(self):
-        """Generates traffic from each of the labeled PCAP files"""
+        """Generates traffic from each of the labeled PCAP files,
+        uses ryu logfile to count results"""
         results = dict()
         for exp, fname in self.cfg["experiment_files"].items():
             # Clear the ryu log
@@ -103,20 +106,21 @@ class SmartSwitchTopo(SingleSwitchTopo):
                 results[exp][prediction_result] = int(p.communicate()[0])
         return results
 
-    def read_experiment_results(self):
-        """Uses GREP instead of readlines (performance optimization)
-        to count the predictions made by the controller."""
-        ret = []
-        if not os.path.exists('./ryu.log'):
-            print("Error: Could not find ryu log!")
-            return False
-        for label in ["cpu", "memory", "network"]:
-            # TODO: Remove shell=True
-            p = subprocess.Popen(f'grep "PREDICTION: {label}" ./ryu.log | wc -l', shell=True, stdout=subprocess.PIPE)
-            ret.append(int(p.communicate()[0]))
-        return tuple(ret)
+    # def read_experiment_results(self):
+    #     """Uses GREP instead of readlines (performance optimization)
+    #     to count the predictions made by the controller."""
+    #     ret = []
+    #     if not os.path.exists('./ryu.log'):
+    #         print("Error: Could not find ryu log!")
+    #         return False
+    #     for label in ["cpu", "memory", "network"]:
+    #         # TODO: Remove shell=True
+    #         p = subprocess.Popen(f'grep "PREDICTION: {label}" ./ryu.log | wc -l', shell=True, stdout=subprocess.PIPE)
+    #         ret.append(int(p.communicate()[0]))
+    #     return tuple(ret)
 
     def quit(self):
+        """Necessary to let Mininet clean itself for next run"""
         print('Shutting Down Topology')
         self.net.stop()
         exit()

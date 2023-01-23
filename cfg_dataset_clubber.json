@@ -5,7 +5,7 @@
     "length_threshold_cpu": 400,
     "dataset_output_dir": "./labeled_datasets",
     "output_dataset_labels": ["cpu", "network", "memory"],
-    "csv_fieldnames": ["category","permissions","priority","tiq","packet_length", "tod","cpu","network","memory"],
+    "csv_fieldnames": ["category","permissions","priority","tiq", "tod", "packet_length", "cpu","network","memory"],
     "app_categories": {
         "Amazon Prime Video": 1,
         "CyberGhost": 0,

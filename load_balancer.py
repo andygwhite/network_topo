@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from ryu.base import app_manager
+from ryu.base.app_manager import RyuApp
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
@@ -54,9 +55,11 @@ class SimpleSwitch13(app_manager.RyuApp):
     SERVER3_PORT = 3
 
     USE_ML_MODEL = True
-    PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model_DEMO.pt'
+    PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
     # TESTING
-    CSV_CHECK = iter(genfromtxt("/home/mininet/network_topo/labeled_datasets_DEMO/validation/network.csv", delimiter=','))
+    CSV_CHECK = iter(genfromtxt("/home/mininet/network_topo/labeled_datasets/validation/all.csv", delimiter=','))
+    # Skip header
+    next(CSV_CHECK)
     
     # maps index of ML algorithm output to the corresponding data server
     ML_SERVER_MAPPING = {
@@ -123,6 +126,7 @@ class SimpleSwitch13(app_manager.RyuApp):
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
 
+    # Ryu decorator for packet_in messages
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         # If you hit this you might want to increase
@@ -183,15 +187,19 @@ class SimpleSwitch13(app_manager.RyuApp):
                 datapath.send_msg(packet_out)
                 self.logger.info("Sent the ARP reply packet")
                 return
+        if eth.ethertype != ETH_TYPE_IP:
+            self.logger.info("THIS IS NOT A TCP PACKET!")
 
-        # Handle TCP Packet
         if eth.ethertype == ETH_TYPE_IP:
             self.logger.info("***************************")
             self.logger.info("---Handle TCP Packet---")
+            # Built-in Ryu function to extract packet header
             ip_header = pkt.get_protocol(ipv4.ipv4)
-            # print("[DEBUG]:", ip_header.src)
 
-            packet_handled = self.handle_tcp_packet(datapath, in_port, ip_header, parser, dst_mac, src_mac, msg, ofproto)
+            # Send to prediction function
+            packet_handled = self.handle_tcp_packet(
+                datapath, in_port, ip_header,
+                parser, dst_mac, src_mac, msg, ofproto)
             self.logger.info("TCP packet handled: " + str(packet_handled))
             if packet_handled:
                 return
@@ -241,8 +249,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         """Function which splits the options array into multiple
         lists based on the given option size"""
         split_list = []
-        # Get rid of all 0's
-        # options = [opt for opt in options if opt != 0]
         i = 0
         while i < len(options):
             if options[i] == 0:
@@ -274,14 +280,14 @@ class SimpleSwitch13(app_manager.RyuApp):
             if str(opt[0]) not in self.ip_option_decode:
                 print("[WARNING]: Info Type Not Recognized!")
                 return self.SERVER1_IP, self.SERVER1_PORT
-                # BUG: This section fits timestamp into one value only!
             self.logger.info(f"Option {opt} loaded: {self.ip_option_decode[str(opt[0])]['name']}, value: {str(opt[2])}")
             options_organized[self.ip_option_decode[str(opt[0])]['name']] = float(opt[2])
         # If we made it this far, we can actually use the options
         # First need to process them into a numpy array
-        # print(options_organized['timestamp'])
         # Use one hot encoding
         ml_input = np.array([
+            options_organized['timestamp'] // 16 / 13,
+            ip_header.total_length / 1500,
             options_organized['category'] == 0,
             options_organized['category'] == 1,
             options_organized['category'] == 2,
@@ -302,8 +308,6 @@ class SimpleSwitch13(app_manager.RyuApp):
             options_organized['permissions priority'] % 16 == 5,
             options_organized['permissions priority'] % 16 == 6,
             options_organized['permissions priority'] % 16 == 7,
-            options_organized['timestamp'] // 16 / 13,
-            ip_header.total_length / 1500,
             options_organized['timestamp'] % 16 == 0,
             options_organized['timestamp'] % 16 == 1,
             options_organized['timestamp'] % 16 == 2,
@@ -315,6 +319,8 @@ class SimpleSwitch13(app_manager.RyuApp):
         # See if this matches the current input
         csv_check = next(self.CSV_CHECK)
         csv_check = np.array([
+            csv_check[3] / 13,
+            ip_header.total_length / 1500,
             csv_check[0] == 0,
             csv_check[0] == 1,
             csv_check[0] == 2,
@@ -335,22 +341,18 @@ class SimpleSwitch13(app_manager.RyuApp):
             csv_check[2] == 5,
             csv_check[2] == 6,
             csv_check[2] == 7,
-            csv_check[3] / (13*3600),
-            ip_header.total_length / 1500,
-            csv_check[5] == 0,
-            csv_check[5] == 1,
-            csv_check[5] == 2,
-            csv_check[5] == 3,
+            csv_check[4] == 0,
+            csv_check[4] == 1,
+            csv_check[4] == 2,
+            csv_check[4] == 3,
             # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
         ])
         self.logger.info(csv_check)
         self.logger.info(f"{self.packet_counter}")
         self.packet_counter += 1
-        self.logger.info(f"Matches CSV: {csv_check == ml_input}")
-        if not (csv_check == ml_input).all():
-            quit()
+        self.logger.info(f"Matches CSV: {np.all(csv_check == ml_input)}")
         self.logger.info(f"Prediction from CSV: {self.ml_model(torch.from_numpy(csv_check).float()).data.numpy()}")
-        # END TESTING
+        # # END TESTING
         if self.USE_ML_MODEL:
             return self.predict_using_lr(ml_input)
         if self.fake_ml(ml_input) == 2:
@@ -358,55 +360,64 @@ class SimpleSwitch13(app_manager.RyuApp):
         return self.SERVER1_IP, self.SERVER1_PORT
 
     def predict_using_lr(self, ml_input):
-        pred = self.ml_model(torch.from_numpy(ml_input).float()).data.numpy()
+        """Uses ML Model to predict target server.
+        ML output will be 3-element array with the
+        highest value corresponding to the predicted
+        server. Each index is mapped to the correct IP
+        address of the server."""
+        pred = self.ml_model(
+            torch.from_numpy(ml_input).float()).data.numpy()
         self.logger.info(f"Prediction tensor: {pred}")
-        self.logger.info(f"PREDICTION: {self.ML_WORKLOAD_MAPPING[pred.argmax()]}")
+        # pred.argmax: Numpy function to return index of max elem
+        self.logger.info(
+            f"""PREDICTION: \
+{self.ML_WORKLOAD_MAPPING[pred.argmax()]}""")
         return self.ML_SERVER_MAPPING[pred.argmax()]
 
 
     def fake_ml(self, ml_input):
         return ml_input[1]
 
-    def handle_tcp_packet(self, datapath, in_port, ip_header, parser, dst_mac, src_mac, msg, ofproto):
+    def handle_tcp_packet(
+            self, datapath, in_port, ip_header, parser,
+            dst_mac, src_mac, msg, ofproto):
         packet_handled = False
+        # Machine Learning Prediction Function
         server_dst_ip, server_out_port = self.determine_output_ip(ip_header)        
-        # if ip_header.dst == self.VIRTUAL_IP:
-        #     if dst_mac == self.SERVER1_MAC:
-        #         server_dst_ip = self.SERVER1_IP
-        #         server_out_port = self.SERVER1_PORT
-        #     else:
-        #         server_dst_ip = self.SERVER2_IP
-        #         server_out_port = self.SERVER2_PORT
-
-        # Route to server
-        match = parser.OFPMatch(in_port=in_port, eth_type=ETH_TYPE_IP, ip_proto=ip_header.proto,
-                                ipv4_dst=self.VIRTUAL_IP)
         actions = [parser.OFPActionSetField(ipv4_dst=server_dst_ip),
                     parser.OFPActionOutput(server_out_port)]
         # Send Packet Out Message
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
-        out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-                                  in_port=in_port, actions=actions, data=data)
+        out = parser.OFPPacketOut(
+            datapath=datapath,
+            buffer_id=msg.buffer_id,
+            in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
+                # Route to server
+        # match = parser.OFPMatch(
+        #     in_port=in_port,
+        #     eth_type=ETH_TYPE_IP,
+        #     ip_proto=ip_header.proto,
+        #     ipv4_dst=self.VIRTUAL_IP)
         # self.add_flow(datapath, 20, match, actions)
-        self.logger.info("<==== Added TCP Flow- Route to Server: " + str(server_dst_ip) +
-                            " from Client :" + str(ip_header.src) + " on Switch Port:" +
-                            str(server_out_port) + "====>")
+        # self.logger.info("<==== Added TCP Flow- Route to Server: " + str(server_dst_ip) +
+        #                     " from Client :" + str(ip_header.src) + " on Switch Port:" +
+        #                     str(server_out_port) + "====>")
 
         # Reverse route from server
-        match = parser.OFPMatch(in_port=server_out_port, eth_type=ETH_TYPE_IP,
-                                ip_proto=ip_header.proto,
-                                ipv4_src=server_dst_ip,
-                                eth_dst=src_mac)
-        actions = [parser.OFPActionSetField(ipv4_src=self.VIRTUAL_IP),
-                    parser.OFPActionOutput(in_port)]
+        # match = parser.OFPMatch(in_port=server_out_port, eth_type=ETH_TYPE_IP,
+        #                         ip_proto=ip_header.proto,
+        #                         ipv4_src=server_dst_ip,
+        #                         eth_dst=src_mac)
+        # actions = [parser.OFPActionSetField(ipv4_src=self.VIRTUAL_IP),
+        #             parser.OFPActionOutput(in_port)]
 
         # self.add_flow(datapath, 20, match, actions)
-        self.logger.info("<==== Added TCP Flow- Reverse route from Server: " + str(server_dst_ip) +
-                            " to Client: " + str(src_mac) + " on Switch Port:" +
-                            str(in_port) + "====>")
+        # self.logger.info("<==== Added TCP Flow- Reverse route from Server: " + str(server_dst_ip) +
+        #                     " to Client: " + str(src_mac) + " on Switch Port:" +
+        #                     str(in_port) + "====>")
         packet_handled = True
         return packet_handled
 

@@ -20,7 +20,7 @@ POSSIBLE_TOD = range(4)
 # POSSIBLE_PACKET_LENGTH = range(50, 1400, 200)
 @click.command()
 def cli():
-    with open('generated_dataset_DEMO.csv', 'w') as f:
+    with open('generated_dataset.csv', 'w') as f:
         datawriter = csv.DictWriter(f, fieldnames=['category', 'permissions', 'priority', 'tiq', 'tod', 'network', 'memory', 'cpu'], delimiter=',', quotechar='|')
         datawriter.writeheader()
         for row in itertools.product(POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_CATEGORY, POSSIBLE_TIQ, POSSIBLE_TOD):
