@@ -32,7 +32,6 @@ import itertools
 import copy
 
 FIXED_EPOCH_TIME = 1667952000
-MAX_PACKETS_PER_FILE = 2000
 
 def absoluteFilePaths(directory):
     for dirpath,_,filenames in os.walk(directory):
@@ -95,11 +94,11 @@ class Clubber:
         POSSIBLE_PERMISSIONS = range(4)
         POSSIBLE_TIQ = range(0, 14)
         POSSIBLE_TOD = range(4)
-        POSSIBLE_POWER = range(8)
+        # POSSIBLE_POWER = range(8)
         # This will hold generated datasets queried by their 
         self.generated_dataset = {category_num: [] for category_num in POSSIBLE_CATEGORY}
         print(self.generated_dataset)
-        for row in itertools.product(POSSIBLE_CATEGORY, POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_TIQ, POSSIBLE_TOD, POSSIBLE_POWER):
+        for row in itertools.product(POSSIBLE_CATEGORY, POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_TIQ, POSSIBLE_TOD):
             # Algorithm to determine ranking
             # Note that this now includes network intensive
             row = {
@@ -108,7 +107,7 @@ class Clubber:
                 'priority': row[2],
                 'tiq': row[3],
                 'tod': row[4],
-                'power': row[5],
+                'power': random.choice(self.cfg["power_consumption_ranges_by_category"][f"{row[0]}"]),
                 'cpu': 0,
                 'network': 0,
                 'memory': 0
@@ -164,7 +163,7 @@ class Clubber:
             reader = PcapReader(f)
             for i, pkt in enumerate(reader):
                 # Place every 5th packet in validation bin
-                if MAX_PACKETS_PER_FILE < 0 or i >= MAX_PACKETS_PER_FILE:
+                if self.cfg["max_packets_per_file"] < 0 or i >= self.cfg["max_packets_per_file"]:
                     break
                 # Clear line
                 print("", end='\r')
