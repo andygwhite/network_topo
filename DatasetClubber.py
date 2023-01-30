@@ -95,10 +95,11 @@ class Clubber:
         POSSIBLE_PERMISSIONS = range(4)
         POSSIBLE_TIQ = range(0, 14)
         POSSIBLE_TOD = range(4)
+        POSSIBLE_POWER = range(8)
         # This will hold generated datasets queried by their 
         self.generated_dataset = {category_num: [] for category_num in POSSIBLE_CATEGORY}
         print(self.generated_dataset)
-        for row in itertools.product(POSSIBLE_CATEGORY, POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_TIQ, POSSIBLE_TOD):
+        for row in itertools.product(POSSIBLE_CATEGORY, POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_TIQ, POSSIBLE_TOD, POSSIBLE_POWER):
             # Algorithm to determine ranking
             # Note that this now includes network intensive
             row = {
@@ -107,6 +108,7 @@ class Clubber:
                 'priority': row[2],
                 'tiq': row[3],
                 'tod': row[4],
+                'power': row[5],
                 'cpu': 0,
                 'network': 0,
                 'memory': 0
@@ -181,6 +183,8 @@ class Clubber:
                                 IPOption(b'\x1e\x03%1b' % (int(generated_datapoint['category']).to_bytes(1, 'big'))),
                                 IPOption(b'\x5e\x03%1b' % ((int(int(generated_datapoint['tiq']) * 16) + int(generated_datapoint['tod'])).to_bytes(1, 'big'))),
                                 IPOption(b'\x9e\x03%1b' % ((int(generated_datapoint['permissions']) * 16 + int(generated_datapoint['priority'])).to_bytes(1, 'big'))),
+                                IPOption(b'\xde\x03%1b' % (int(generated_datapoint['power']).to_bytes(1, 'big'))),
+                                IPOption(b'\x00'),
                             ]
                             setattr(pkt, 'options', options)
                             setattr(pkt, 'dst', self.cfg['destination_ip'])
