@@ -312,6 +312,14 @@ class SimpleSwitch13(app_manager.RyuApp):
             options_organized['timestamp'] % 16 == 1,
             options_organized['timestamp'] % 16 == 2,
             options_organized['timestamp'] % 16 == 3,
+            options_organized['power'] == 0,
+            options_organized['power'] == 1,
+            options_organized['power'] == 3,
+            options_organized['power'] == 2,
+            options_organized['power'] == 4,
+            options_organized['power'] == 5,
+            options_organized['power'] == 6,
+            options_organized['power'] == 7,
             # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
         ])
         self.logger.info(f"ML Input is: {ml_input.tolist()}")
@@ -345,6 +353,14 @@ class SimpleSwitch13(app_manager.RyuApp):
             csv_check[4] == 1,
             csv_check[4] == 2,
             csv_check[4] == 3,
+            csv_check[5] == 0,
+            csv_check[5] == 1,
+            csv_check[5] == 2,
+            csv_check[5] == 3,
+            csv_check[5] == 4,
+            csv_check[5] == 5,
+            csv_check[5] == 6,
+            csv_check[5] == 7,
             # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
         ])
         self.logger.info(csv_check)
