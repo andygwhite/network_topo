@@ -6,3 +6,4 @@ Network-Traffic-Dataset-All/*
 *.json
 */*.csv
 */*/*.csv
+*.pyc
