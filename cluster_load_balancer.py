@@ -58,9 +58,9 @@ class SimpleSwitch13(app_manager.RyuApp):
     USE_ML_MODEL = True
     PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
     # TESTING
-    CSV_CHECK = iter(genfromtxt("/home/mininet/network_topo/labeled_datasets/validation/all.csv", delimiter=','))
+    # CSV_CHECK = iter(genfromtxt("/home/mininet/network_topo/labeled_datasets/validation/all.csv", delimiter=','))
     # Skip header
-    next(CSV_CHECK)
+    # next(CSV_CHECK)
     
     # maps the workload clusters to a list of all their servers
     ML_SERVER_MAPPING = {
@@ -324,46 +324,46 @@ class SimpleSwitch13(app_manager.RyuApp):
             # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
         ])
         # self.logger.info(f"ML Input is: {ml_input.tolist()}")
-        # TESTING
-        # See if this matches the current input
-        csv_check = next(self.CSV_CHECK)
-        csv_check = np.array([
-            csv_check[3] / 13,
-            ip_header.total_length / 1500,
-            csv_check[0] == 0,
-            csv_check[0] == 1,
-            csv_check[0] == 2,
-            csv_check[0] == 3,
-            csv_check[0] == 4,
-            csv_check[0] == 5,
-            csv_check[0] == 6,
-            csv_check[0] == 7,
-            csv_check[1] == 0,
-            csv_check[1] == 1,
-            csv_check[1] == 2,
-            csv_check[1] == 3,
-            csv_check[2] == 0,
-            csv_check[2] == 1,
-            csv_check[2] == 2,
-            csv_check[2] == 3,
-            csv_check[2] == 4,
-            csv_check[2] == 5,
-            csv_check[2] == 6,
-            csv_check[2] == 7,
-            csv_check[4] == 0,
-            csv_check[4] == 1,
-            csv_check[4] == 2,
-            csv_check[4] == 3,
-            csv_check[5] == 0,
-            csv_check[5] == 1,
-            csv_check[5] == 2,
-            csv_check[5] == 3,
-            csv_check[5] == 4,
-            csv_check[5] == 5,
-            csv_check[5] == 6,
-            csv_check[5] == 7,
-            # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
-        ])
+        # # TESTING
+        # # See if this matches the current input
+        # csv_check = next(self.CSV_CHECK)
+        # csv_check = np.array([
+        #     csv_check[3] / 13,
+        #     ip_header.total_length / 1500,
+        #     csv_check[0] == 0,
+        #     csv_check[0] == 1,
+        #     csv_check[0] == 2,
+        #     csv_check[0] == 3,
+        #     csv_check[0] == 4,
+        #     csv_check[0] == 5,
+        #     csv_check[0] == 6,
+        #     csv_check[0] == 7,
+        #     csv_check[1] == 0,
+        #     csv_check[1] == 1,
+        #     csv_check[1] == 2,
+        #     csv_check[1] == 3,
+        #     csv_check[2] == 0,
+        #     csv_check[2] == 1,
+        #     csv_check[2] == 2,
+        #     csv_check[2] == 3,
+        #     csv_check[2] == 4,
+        #     csv_check[2] == 5,
+        #     csv_check[2] == 6,
+        #     csv_check[2] == 7,
+        #     csv_check[4] == 0,
+        #     csv_check[4] == 1,
+        #     csv_check[4] == 2,
+        #     csv_check[4] == 3,
+        #     csv_check[5] == 0,
+        #     csv_check[5] == 1,
+        #     csv_check[5] == 2,
+        #     csv_check[5] == 3,
+        #     csv_check[5] == 4,
+        #     csv_check[5] == 5,
+        #     csv_check[5] == 6,
+        #     csv_check[5] == 7,
+        #     # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
+        # ])
         # self.logger.info(csv_check)
         self.logger.info(f"{self.packet_counter}")
         self.packet_counter += 1
@@ -397,7 +397,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Do machine learning here
         # For now, do a random server
         server = random.choice(self.ML_SERVER_MAPPING[cluster_name])
-        self.logger.info(f"Selecing random server in cluster: {server}")
+        self.logger.info(f"Selecting random server in cluster: {server}")
         return server
 
     def fake_ml(self, ml_input):
@@ -412,7 +412,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         packet_handled = False
         server_dst_ip, server_out_port = self.determine_output_host(
             ip_header, self.determine_output_cluster(ip_header))
-        print(f"Sending to server {server_dst_ip} on port {server_out_port}")        
+        self.logger.info(f"Sending to server {server_dst_ip} on port {server_out_port}")        
         actions = [parser.OFPActionSetField(ipv4_dst=server_dst_ip),
                     parser.OFPActionOutput(server_out_port)]
         # Send Packet Out Message
