@@ -78,18 +78,7 @@ class ClusterTopo( Topo ):
             elif choice == '3':
                 CLI(self.net, stdin=sys.stdin, script="./open_xterms.sh")
             elif choice == '4':
-                results = self.run_experiment()
-                print(pd.DataFrame.from_dict(results).to_markdown())
-                total_count = 0
-                total_correct = 0
-                for exp in ["cpu", "memory", "network"]:
-                    for label in ["cpu", "memory", "network"]:
-                        total_count += results[exp][label]
-                        if exp == label:
-                            total_correct += results[exp][label]
-                print("Correct:", total_correct)
-                print("Total count:", total_count)
-                print(f"Total Accuracy: {100*total_correct/total_count}%")
+                self.run_experiment()
             else:
                 print(choice, 'is not a valid option')
 
@@ -102,10 +91,27 @@ class ClusterTopo( Topo ):
         # return p.returncode
 
     def run_experiment(self):
-        """Generates traffic from each of the labeled PCAP files,
-        uses ryu logfile to count results"""
+        """Provides user with a menu to choose what experiment to run"""
+        while True:
+            print('Please select an option')
+            print('\tq: Return')
+            print('\t1: First Stage Experiment')
+            print('\t2: Second Stage Experiment')
+            try:
+                choice = input()
+            except EOFError:
+                return
+            if choice == 'q':
+                return
+            elif choice == '1':
+                self.stage_one_exp()
+            elif choice == '2':
+                self.stage_two_exp()
+
+    def stage_one_exp(self):
+        """Build a confusion matrix for a given PCAP validation file"""
         results = dict()
-        for exp, fname in self.cfg["experiment_files"].items():
+        for exp, fname in self.cfg["first_stage_experiment_files"].items():
             # Clear the ryu log
             with open(RYU_LOGFILE, 'w') as f:
                 f.write('')
@@ -117,22 +123,50 @@ class ClusterTopo( Topo ):
             p = self.hosts[0].cmd([
                 'python3', './packet_generator.py', fname])
             for prediction_result in ["cpu", "network", "memory"]:
-                p = subprocess.Popen(f'grep "PREDICTION: {prediction_result}" ./ryu.log | wc -l', shell=True, stdout=subprocess.PIPE)
+                p = subprocess.Popen(
+                    f'grep "PREDICTION: {prediction_result}" ./ryu.log | wc -l',
+                    shell=True, stdout=subprocess.PIPE)
                 results[exp][prediction_result] = int(p.communicate()[0])
-        return results
+        print(pd.DataFrame.from_dict(results).to_markdown())
+        total_count = 0
+        total_correct = 0
+        for exp in ["cpu", "memory", "network"]:
+            for label in ["cpu", "memory", "network"]:
+                total_count += results[exp][label]
+                if exp == label:
+                    total_correct += results[exp][label]
+        print("Correct:", total_correct)
+        print("Total count:", total_count)
+        print(f"Total Accuracy: {100*total_correct/total_count}%")
+        return
 
-    # def read_experiment_results(self):
-    #     """Uses GREP instead of readlines (performance optimization)
-    #     to count the predictions made by the controller."""
-    #     ret = []
-    #     if not os.path.exists('./ryu.log'):
-    #         print("Error: Could not find ryu log!")
-    #         return False
-    #     for label in ["cpu", "memory", "network"]:
-    #         # TODO: Remove shell=True
-    #         p = subprocess.Popen(f'grep "PREDICTION: {label}" ./ryu.log | wc -l', shell=True, stdout=subprocess.PIPE)
-    #         ret.append(int(p.communicate()[0]))
-    #     return tuple(ret)
+    def stage_two_exp(self):
+        """Report average latency, bandwidth, utilization, etc.
+        for each server"""
+        # Clear the ryu log
+        with open(RYU_LOGFILE, 'w') as f:
+            f.write('')
+        print(f"Running 2nd stage test")
+        # Record the number of requests sent to each server by counting Ryu log
+        # Count all hosts minus the pgen host
+        results = {}
+        p = self.hosts[0].cmd(
+            ['python3', './packet_generator.py', self.cfg["second_stage_experiment_file"]])
+        for i in range(1, len(self.hosts)):
+            p = subprocess.Popen(
+                    f'grep "Sending to server 10\.0\.0\.{i}" ./ryu.log | wc -l',
+                    shell=True, stdout=subprocess.PIPE)
+            results[i] = int(p.communicate()[0])
+        # Clean up latency & bandwidth info from cfg file
+        latencies = {i: int(self.cfg["host_latency"][str(i)].replace("ms",""))
+                     for i in range(1, len(self.hosts))}
+        bandwidths = {i: self.cfg["host_bandwidth"][str(i)]
+                      for i in range(1, len(self.hosts))}
+        total_latency = sum([results[i] * latencies[i] for i in range(1, len(self.hosts))])
+        total_bandwidth = sum([results[i] * bandwidths[i] for i in range(1, len(self.hosts))])
+        total_packets = sum(list(results.values()))
+        print("Average latency:", total_latency/total_packets)
+        print("Average bandwidth:", total_bandwidth/total_packets)
 
     def quit(self):
         """Necessary to let Mininet clean itself for next run"""
