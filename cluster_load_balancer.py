@@ -109,17 +109,20 @@ class SimpleSwitch13(app_manager.RyuApp):
         if os.path.exists('./ryu.log'):
             with open('./ryu.log', 'w') as f:
                 f.write('')
-        fieldnames = ["workload_type", "selected_server"]
+        with open('./topo_cluster_cfg.json', 'r') as f:
+            self.topo_cluster_cfg = json.load(f)
+        with open('./ip_option_decode.json', 'r') as f:
+            self.ip_option_decode = json.load(f)
+        fieldnames = ["workload_type", "selected_server", "latency", "bandwidth"]
         for cluster in self.ML_SERVER_MAPPING.values():
             fieldnames.extend([server[0] for server in cluster])
         self.data_writer = csv.DictWriter(open('./experiment.csv', 'w'), fieldnames)
+        self.data_writer.writeheader()
         if self.USE_ML_MODEL:
             if not os.path.exists(self.PATH_TO_ML_MODEL):
                 raise FileNotFoundError("Cannot find ML model!")
             self.ml_model = torch.load(self.PATH_TO_ML_MODEL)
             self.ml_model.eval()
-        with open('./ip_option_decode.json', 'r') as f:
-            self.ip_option_decode = json.load(f)
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -350,48 +353,6 @@ class SimpleSwitch13(app_manager.RyuApp):
             options_organized['power'] == 7,
             # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
         ])
-        # self.logger.info(f"ML Input is: {ml_input.tolist()}")
-        # # TESTING
-        # # See if this matches the current input
-        # csv_check = next(self.CSV_CHECK)
-        # csv_check = np.array([
-        #     csv_check[3] / 13,
-        #     ip_header.total_length / 1500,
-        #     csv_check[0] == 0,
-        #     csv_check[0] == 1,
-        #     csv_check[0] == 2,
-        #     csv_check[0] == 3,
-        #     csv_check[0] == 4,
-        #     csv_check[0] == 5,
-        #     csv_check[0] == 6,
-        #     csv_check[0] == 7,
-        #     csv_check[1] == 0,
-        #     csv_check[1] == 1,
-        #     csv_check[1] == 2,
-        #     csv_check[1] == 3,
-        #     csv_check[2] == 0,
-        #     csv_check[2] == 1,
-        #     csv_check[2] == 2,
-        #     csv_check[2] == 3,
-        #     csv_check[2] == 4,
-        #     csv_check[2] == 5,
-        #     csv_check[2] == 6,
-        #     csv_check[2] == 7,
-        #     csv_check[4] == 0,
-        #     csv_check[4] == 1,
-        #     csv_check[4] == 2,
-        #     csv_check[4] == 3,
-        #     csv_check[5] == 0,
-        #     csv_check[5] == 1,
-        #     csv_check[5] == 2,
-        #     csv_check[5] == 3,
-        #     csv_check[5] == 4,
-        #     csv_check[5] == 5,
-        #     csv_check[5] == 6,
-        #     csv_check[5] == 7,
-        #     # datetime.datetime.fromtimestamp(options_organized['timestamp']).hour // 4
-        # ])
-        # self.logger.info(csv_check)
         self.logger.info(f"{self.packet_counter}")
         self.packet_counter += 1
         # Track the power consumption of the given packet
@@ -423,15 +384,16 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Do machine learning here
         # Calculate current utilization percentages in this cluster
         data = {}
-        self.logger.info("Server utilization balance:")
         data.update(self.get_utils())
         # For now, do a random server
         server = random.choice(self.ML_SERVER_MAPPING[cluster_name])
+        self.util_queues[cluster_name].util_put(server[0], self.current_packet_power)
         self.logger.info(f"Selecting random server in cluster: {server}")
-        self.util_queues[cluster_name].util_put(server[1], self.current_packet_power)
         data.update({
             "workload_type": cluster_name,
             "selected_server": server[0],
+            "latency": self.topo_cluster_cfg["host_latency"][str(server[1])],
+            "bandwidth": self.topo_cluster_cfg["host_bandwidth"][str(server[1])]
         })
         print(data)
         self.data_writer.writerow(data)
@@ -447,7 +409,7 @@ class SimpleSwitch13(app_manager.RyuApp):
                 if qsize == 0:
                     util_balance[server[0]] = 0
                     continue
-                util_balance[server[0]] = self.util_queues[cluster_name].queue.count(server) / qsize
+                util_balance[server[0]] = self.util_queues[cluster_name].queue.count(server[0]) / qsize
         return util_balance
 
     def fake_ml(self, ml_input):

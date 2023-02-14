@@ -40,7 +40,7 @@ class ClusterTopo( Topo ):
         # Initialize the number of hosts for each cluster
         k = int(self.cfg["num_hosts_per_cluster"]) * 3
         super().__init__(k=k)
-        self.net = Mininet(topo=self, controller=SimpleSwitch13, link=TCLink)
+        self.net = Mininet(topo=self, controller=RemoteController, link=TCLink)
         self.net.start()
         # Reassign controller to remote controller
         print("Topo Started Successfully")
