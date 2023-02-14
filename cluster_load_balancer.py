@@ -38,7 +38,25 @@ import datetime
 import os
 import json
 import sys
+from queue import Queue
+import csv
 FIXED_EPOCH_TIME = 1668036116
+
+
+class UtilizationQueue(Queue):
+    """Wrapper for queue which allows for multiple puts at once, handles
+    flushing the queue when it gets too full"""
+    def __init__(self, maxsize=0):
+        super().__init__(maxsize=maxsize)
+
+    def util_put(self, item, n=1):
+        """put method that allows for multiple insertions and manages pops"""
+        if(self.qsize() + n >= self.maxsize):
+            for i in range(int(n)):
+                self.get()
+        for i in range(int(n)):
+            self.put(item)
+
 
 class SimpleSwitch13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -80,17 +98,26 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.mac_to_port = {}
         self.ml_model = None
         self.packet_counter = 1
+        # Instantiate utilization queue for each cluster
+        self.util_queues = {cluster_name: UtilizationQueue(1000)
+                            for cluster_name in self.ML_SERVER_MAPPING.keys()}
+        # Use this to track power consumption btw first and second stage
+        self.current_packet_power = 0
+        # Track the dst workload cluster btw first and second stage
+        self.dst_cluster = ''
         # Clear the log file
         if os.path.exists('./ryu.log'):
             with open('./ryu.log', 'w') as f:
                 f.write('')
+        fieldnames = ["workload_type", "selected_server"]
+        for cluster in self.ML_SERVER_MAPPING.values():
+            fieldnames.extend([server[0] for server in cluster])
+        self.data_writer = csv.DictWriter(open('./experiment.csv', 'w'), fieldnames)
         if self.USE_ML_MODEL:
             if not os.path.exists(self.PATH_TO_ML_MODEL):
                 raise FileNotFoundError("Cannot find ML model!")
             self.ml_model = torch.load(self.PATH_TO_ML_MODEL)
             self.ml_model.eval()
-            
-
         with open('./ip_option_decode.json', 'r') as f:
             self.ip_option_decode = json.load(f)
 
@@ -367,9 +394,8 @@ class SimpleSwitch13(app_manager.RyuApp):
         # self.logger.info(csv_check)
         self.logger.info(f"{self.packet_counter}")
         self.packet_counter += 1
-        # self.logger.info(f"Matches CSV: {np.all(csv_check == ml_input)}")
-        # self.logger.info(f"Prediction from CSV: {self.ml_model(torch.from_numpy(csv_check).float()).data.numpy()}")
-        # # END TESTING
+        # Track the power consumption of the given packet
+        self.current_packet_power = options_organized['power']
         if self.USE_ML_MODEL:
             return self.predict_using_lr(ml_input)
         if self.fake_ml(ml_input) == 2:
@@ -395,10 +421,34 @@ class SimpleSwitch13(app_manager.RyuApp):
         """Determine the best output server from a cluster
         based on machine learning algorithm"""
         # Do machine learning here
+        # Calculate current utilization percentages in this cluster
+        data = {}
+        self.logger.info("Server utilization balance:")
+        data.update(self.get_utils())
         # For now, do a random server
         server = random.choice(self.ML_SERVER_MAPPING[cluster_name])
         self.logger.info(f"Selecting random server in cluster: {server}")
+        self.util_queues[cluster_name].util_put(server[1], self.current_packet_power)
+        data.update({
+            "workload_type": cluster_name,
+            "selected_server": server[0],
+        })
+        print(data)
+        self.data_writer.writerow(data)
         return server
+
+    def get_utils(self):
+        """Helper function to return a dict of all the current server utils"""
+        util_balance = {}
+        for cluster_name in self.ML_SERVER_MAPPING.keys():
+            for server in self.ML_SERVER_MAPPING[cluster_name]:
+                qsize = self.util_queues[cluster_name].qsize()
+                # Avoid div0 exception
+                if qsize == 0:
+                    util_balance[server[0]] = 0
+                    continue
+                util_balance[server[0]] = self.util_queues[cluster_name].queue.count(server) / qsize
+        return util_balance
 
     def fake_ml(self, ml_input):
         return ml_input[1]
@@ -412,7 +462,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         packet_handled = False
         server_dst_ip, server_out_port = self.determine_output_host(
             ip_header, self.determine_output_cluster(ip_header))
-        self.logger.info(f"Sending to server {server_dst_ip} on port {server_out_port}")        
+        self.logger.info(f"Sending to server {server_dst_ip} on port {server_out_port}")
         actions = [parser.OFPActionSetField(ipv4_dst=server_dst_ip),
                     parser.OFPActionOutput(server_out_port)]
         # Send Packet Out Message

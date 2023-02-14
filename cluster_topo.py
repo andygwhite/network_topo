@@ -9,6 +9,8 @@ import json
 import sys
 import subprocess
 import os
+import matplotlib.pyplot as plt
+from cluster_load_balancer import SimpleSwitch13
 
 # Where to read/write experiment results
 RYU_LOGFILE = './ryu.log'
@@ -38,7 +40,7 @@ class ClusterTopo( Topo ):
         # Initialize the number of hosts for each cluster
         k = int(self.cfg["num_hosts_per_cluster"]) * 3
         super().__init__(k=k)
-        self.net = Mininet(topo=self, controller=RemoteController, link=TCLink)
+        self.net = Mininet(topo=self, controller=SimpleSwitch13, link=TCLink)
         self.net.start()
         # Reassign controller to remote controller
         print("Topo Started Successfully")
@@ -108,13 +110,17 @@ class ClusterTopo( Topo ):
             elif choice == '2':
                 self.stage_two_exp()
 
+    def clear_experiment_logs(self):
+        """Helper function to clear all logs by executing commands on c0"""
+        for log in ["./ryu.log", "./experiment.csv"]:
+            self.net.get('c0').cmd("truncate -s 0 ./ryu.log")
+
     def stage_one_exp(self):
         """Build a confusion matrix for a given PCAP validation file"""
         results = dict()
         for exp, fname in self.cfg["first_stage_experiment_files"].items():
             # Clear the ryu log
-            with open(RYU_LOGFILE, 'w') as f:
-                f.write('')
+            self.clear_experiment_logs()
             print(f"Running {exp} experiment from {fname}")
             results[exp] = dict()
             if not os.path.exists(fname):
@@ -144,8 +150,9 @@ class ClusterTopo( Topo ):
         """Report average latency, bandwidth, utilization, etc.
         for each server"""
         # Clear the ryu log
-        with open(RYU_LOGFILE, 'w') as f:
-            f.write('')
+        # with open(RYU_LOGFILE, 'w') as f:
+        #     f.write('')
+        self.clear_experiment_logs()
         print(f"Running 2nd stage test")
         # Record the number of requests sent to each server by counting Ryu log
         # Count all hosts minus the pgen host
