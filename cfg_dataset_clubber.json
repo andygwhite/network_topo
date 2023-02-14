@@ -3,7 +3,7 @@
     "pcap_dataset_main_dir": "./Network-Traffic-Dataset-All",
     "create_modified_pcap": true,
     "length_threshold_cpu": 400,
-    "max_packets_per_file": 20,
+    "max_packets_per_file": 100,
     "dataset_output_dir": "./labeled_datasets",
     "output_dataset_labels": ["cpu", "network", "memory"],
     "csv_fieldnames": ["category","permissions","priority","tiq", "tod", "power", "packet_length", "cpu","network","memory"],
