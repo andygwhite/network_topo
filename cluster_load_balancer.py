@@ -40,6 +40,7 @@ import json
 import sys
 from queue import Queue
 import csv
+import itertools
 FIXED_EPOCH_TIME = 1668036116
 
 
@@ -86,6 +87,9 @@ class SimpleSwitch13(app_manager.RyuApp):
         'network': [(f'10.0.0.{i}', i) for i in range(5, 9)],
         'memory': [(f'10.0.0.{i}', i) for i in range(9, 13)]
     }
+    ROUND_ROBIN_ML_SERVER_MAPPING = {
+        key: itertools.cycle(val) for key, val in ML_SERVER_MAPPING.items()
+    }
     # maps index of ML algorithm output to the corresponding workload type
     ML_WORKLOAD_MAPPING = {
         0: "cpu",
@@ -99,7 +103,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.ml_model = None
         self.packet_counter = 1
         # Instantiate utilization queue for each cluster
-        self.util_queues = {cluster_name: UtilizationQueue(1000)
+        self.util_queues = {cluster_name: UtilizationQueue(400)
                             for cluster_name in self.ML_SERVER_MAPPING.keys()}
         # Use this to track power consumption btw first and second stage
         self.current_packet_power = 0
@@ -385,8 +389,9 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Calculate current utilization percentages in this cluster
         data = {}
         data.update(self.get_utils())
-        # For now, do a random server
-        server = random.choice(self.ML_SERVER_MAPPING[cluster_name])
+        # For now, do a round robing selection
+        server = next(self.ROUND_ROBIN_ML_SERVER_MAPPING[cluster_name])
+        # server = random.choice(self.ML_SERVER_MAPPING[cluster_name])
         self.util_queues[cluster_name].util_put(server[0], self.current_packet_power)
         self.logger.info(f"Selecting random server in cluster: {server}")
         data.update({
@@ -395,7 +400,6 @@ class SimpleSwitch13(app_manager.RyuApp):
             "latency": self.topo_cluster_cfg["host_latency"][str(server[1])],
             "bandwidth": self.topo_cluster_cfg["host_bandwidth"][str(server[1])]
         })
-        print(data)
         self.data_writer.writerow(data)
         return server
 
