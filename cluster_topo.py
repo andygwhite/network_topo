@@ -1,5 +1,7 @@
+import csv
+import time
 from mininet.net import Mininet
-from mininet.node import Controller, RemoteController
+from mininet.node import RemoteController
 from mininet.cli import CLI
 from mininet.topo import Topo
 from mininet.util import irange
@@ -49,13 +51,15 @@ class ClusterTopo( Topo ):
         self.hosts.append(self.net.get('pgen'))
         for i in range(1, k + 1):
             self.hosts.append(self.net.get(f'h{i}'))
+        self.experiment_csv_current_line = 0
         print("Attempting to set MTU for host machine to max packet size")
         for i in range(1,  k + 1):
             p = subprocess.Popen(f"sudo ifconfig s1-eth{i} mtu 65535", shell=True, stdout=subprocess.PIPE)
             if p.communicate()[1] is not None:
                 print(f"[WARNING]: Failed to change MTU size on s1-eth{i}. Packets must not exceed 1500 bytes")
                 break
-        for i, host in enumerate(self.hosts):
+        self.hosts[0].cmd(f"sudo ifconfig pgen-eth0 mtu 65535")
+        for i, host in enumerate(self.hosts[1::]):
             host.cmd(f"sudo ifconfig h{i+1}-eth0 mtu 65535")
         else:
             print("MTU Changed Successfully")
@@ -111,16 +115,26 @@ class ClusterTopo( Topo ):
                 self.stage_two_exp()
 
     def clear_experiment_logs(self):
-        """Helper function to clear all logs by executing commands on c0"""
+        """Helper function to clear all logs by executing commands on c0.
+        Preserves header line in experiment.csv file"""
+        # self.net.get('c0').cmd(f"sed -i '2,$d' ./experiment.csv", shell=True)
+        # self.net.get('c0').cmd(f"sed -i '1,$d' ./ryu.log", shell=True)
         for log in ["./ryu.log", "./experiment.csv"]:
-            self.net.get('c0').cmd("truncate -s 0 ./ryu.log")
+            # self.net.get('c0').cmd(f"truncate -s 0 {log}")
+            with open(log, 'w') as f:
+                f.write('')
 
     def stage_one_exp(self):
         """Build a confusion matrix for a given PCAP validation file"""
         results = dict()
+        self.clear_experiment_logs()
+        start_time = time.time()
+        print(f"Experiment started at {start_time}")
+        # Value to track where to start in the CSV
+        end_of_exp = {'cpu': 0, 'network': 0, 'memory': 0}
+        tmp_line_num = 1
         for exp, fname in self.cfg["first_stage_experiment_files"].items():
             # Clear the ryu log
-            self.clear_experiment_logs()
             print(f"Running {exp} experiment from {fname}")
             results[exp] = dict()
             if not os.path.exists(fname):
@@ -128,11 +142,36 @@ class ClusterTopo( Topo ):
                 continue
             p = self.hosts[0].cmd([
                 'python3', './packet_generator.py', fname])
+            end_of_exp[exp] = int(p.split('\n')[-2]) + tmp_line_num
+            tmp_line_num += int(p.split('\n')[-2])
+            # for prediction_result in ["cpu", "network", "memory"]:
+            #     p = subprocess.Popen(
+            #         f'grep "PREDICTION: {prediction_result}" ./ryu.log | wc -l',
+            #         shell=True, stdout=subprocess.PIPE)
+            #     results[exp][prediction_result] = int(p.communicate()[0])
+        if not os.path.exists(self.cfg["experiment_results"]):
+            print("[ERROR] Could not find experiment results")
+            return
+        with open(self.cfg["experiment_results"], 'r') as f:
+            controller_results = f.readlines()
+            max_wait = 200
+            i = 0
+            while len(controller_results) < end_of_exp['memory']:
+                i += 1
+                if i == max_wait:
+                    print("Timed out")
+                    return
+                print(f"Experiment file not finished (on line {len(controller_results)}), buffering for 1s")
+                time.sleep(1)
+                controller_results.extend(f.readlines())
+            print(len(controller_results))
+            print(f"Time for experiment: {time.time()-start_time}s")
+            print(f"Average packet handling time: {1000*(time.time()-start_time)/len(controller_results)}ms")
+            print(end_of_exp)
             for prediction_result in ["cpu", "network", "memory"]:
-                p = subprocess.Popen(
-                    f'grep "PREDICTION: {prediction_result}" ./ryu.log | wc -l',
-                    shell=True, stdout=subprocess.PIPE)
-                results[exp][prediction_result] = int(p.communicate()[0])
+                results['cpu'][prediction_result] = len([row for row in controller_results[1:end_of_exp['cpu']] if row.split(",")[0] == prediction_result])
+                results['network'][prediction_result] = len([row for row in controller_results[end_of_exp['cpu']:end_of_exp['network']] if row.split(",")[0] == prediction_result])
+                results['memory'][prediction_result] = len([row for row in controller_results[end_of_exp['network']:end_of_exp['memory']] if row.split(",")[0] == prediction_result])
         print(pd.DataFrame.from_dict(results).to_markdown())
         total_count = 0
         total_correct = 0
@@ -152,28 +191,26 @@ class ClusterTopo( Topo ):
         # Clear the ryu log
         # with open(RYU_LOGFILE, 'w') as f:
         #     f.write('')
-        self.clear_experiment_logs()
+        # self.clear_experiment_logs()
         print(f"Running 2nd stage test")
-        # Record the number of requests sent to each server by counting Ryu log
-        # Count all hosts minus the pgen host
-        results = {}
         p = self.hosts[0].cmd(
             ['python3', './packet_generator.py', self.cfg["second_stage_experiment_file"]])
-        for i in range(1, len(self.hosts)):
-            p = subprocess.Popen(
-                    f'grep "Sending to server 10\.0\.0\.{i}" ./ryu.log | wc -l',
-                    shell=True, stdout=subprocess.PIPE)
-            results[i] = int(p.communicate()[0])
-        # Clean up latency & bandwidth info from cfg file
-        latencies = {i: int(self.cfg["host_latency"][str(i)].replace("ms",""))
-                     for i in range(1, len(self.hosts))}
-        bandwidths = {i: self.cfg["host_bandwidth"][str(i)]
-                      for i in range(1, len(self.hosts))}
-        total_latency = sum([results[i] * latencies[i] for i in range(1, len(self.hosts))])
-        total_bandwidth = sum([results[i] * bandwidths[i] for i in range(1, len(self.hosts))])
-        total_packets = sum(list(results.values()))
-        print("Average latency:", total_latency/total_packets)
-        print("Average bandwidth:", total_bandwidth/total_packets)
+        if not os.path.exists(self.cfg["experiment_results"]):
+            print("[ERROR] Could not find experiment results")
+            return
+        results = csv.DictReader(open(self.cfg["experiment_results"], 'r'))
+        latencies = [int(result["latency"].replace("ms", "")) for result in results]
+        bandwidths = [int(result["bandwidth"]) for result in results]
+        print(latencies)
+        print(bandwidths)
+        if len(latencies) > 0:
+            print("Average latency:", sum(latencies)/len(latencies))
+        else:
+            print("Could not retrieve latencies")
+        if len(bandwidths) > 0:
+            print("Average bandwidth:", sum(bandwidths)/len(bandwidths))
+        else:
+            print("Could not retrieve bandwidths")
 
     def quit(self):
         """Necessary to let Mininet clean itself for next run"""

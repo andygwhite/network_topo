@@ -69,16 +69,19 @@ class PacketGeneratorPCAP:
             print(len(pkt))
             next(self.reader_iter)
             return True
+    
+    def get_count(self):
+        return self.counter
 
 
 @click.command
 @click.argument("pcap_file")
-@click.option("-d", "--delay", default=10)
+@click.option("-d", "--delay", default=0)
 def cli(pcap_file, delay):
     gen = PacketGeneratorPCAP(pcap_file)
     while gen.send_next_packet():
         time.sleep(delay/1000)
-    exit()
+    exit(gen.get_count())
 
 
 if __name__ == "__main__":

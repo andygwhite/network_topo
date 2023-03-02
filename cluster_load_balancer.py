@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import random
+import time
 from ryu.base import app_manager
 from ryu.base.app_manager import RyuApp
 from ryu.controller import ofp_event
@@ -41,6 +42,7 @@ import sys
 from queue import Queue
 import csv
 import itertools
+import joblib
 FIXED_EPOCH_TIME = 1668036116
 
 
@@ -74,7 +76,6 @@ class SimpleSwitch13(app_manager.RyuApp):
     SERVER3_MAC = '00:00:00:00:00:03'
     SERVER3_PORT = 3
 
-    USE_ML_MODEL = True
     PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
     # TESTING
     # CSV_CHECK = iter(genfromtxt("/home/mininet/network_topo/labeled_datasets/validation/all.csv", delimiter=','))
@@ -110,23 +111,32 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Track the dst workload cluster btw first and second stage
         self.dst_cluster = ''
         # Clear the log file
-        if os.path.exists('./ryu.log'):
-            with open('./ryu.log', 'w') as f:
-                f.write('')
+        with open('./ryu.log', 'w') as f:
+            f.write('')
+        with open('./experiment.csv', 'w') as f:
+            f.write('')
         with open('./topo_cluster_cfg.json', 'r') as f:
             self.topo_cluster_cfg = json.load(f)
         with open('./ip_option_decode.json', 'r') as f:
             self.ip_option_decode = json.load(f)
-        fieldnames = ["workload_type", "selected_server", "latency", "bandwidth"]
+        fieldnames = ["workload_type", "selected_server", "latency", "bandwidth", "time_handled"]
         for cluster in self.ML_SERVER_MAPPING.values():
             fieldnames.extend([server[0] for server in cluster])
-        self.data_writer = csv.DictWriter(open('./experiment.csv', 'w'), fieldnames)
+        self.experiment_file = open('./experiment.csv', 'w')
+        self.data_writer = csv.DictWriter(self.experiment_file, fieldnames)
         self.data_writer.writeheader()
-        if self.USE_ML_MODEL:
-            if not os.path.exists(self.PATH_TO_ML_MODEL):
+        if self.topo_cluster_cfg["ml_type"] == 'lr':
+            if not os.path.exists(self.topo_cluster_cfg['lr_model_path']):
                 raise FileNotFoundError("Cannot find ML model!")
-            self.ml_model = torch.load(self.PATH_TO_ML_MODEL)
+            self.ml_model = torch.load(self.topo_cluster_cfg['lr_model_path'])
             self.ml_model.eval()
+        elif self.topo_cluster_cfg["ml_type"] == 'rf':
+            if not os.path.exists(self.topo_cluster_cfg['rf_model_path']):
+                raise FileNotFoundError("Cannot find ML model!")
+            self.ml_model = joblib.load(self.topo_cluster_cfg['rf_model_path'])
+        else:
+            self.logger.warning("No ML model selected! Using random predictions")
+            self.ml_model = None
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -361,8 +371,12 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.packet_counter += 1
         # Track the power consumption of the given packet
         self.current_packet_power = options_organized['power']
-        if self.USE_ML_MODEL:
+        if self.ml_model is None:
+            return self.fake_ml()
+        if self.topo_cluster_cfg['ml_type'] == 'lr':
             return self.predict_using_lr(ml_input)
+        elif self.topo_cluster_cfg['ml_type'] == 'rf':
+            return self.predict_using_rf(ml_input)
         if self.fake_ml(ml_input) == 2:
             return self.SERVER2_IP, self.SERVER2_PORT
         return self.SERVER1_IP, self.SERVER1_PORT
@@ -375,6 +389,16 @@ class SimpleSwitch13(app_manager.RyuApp):
         address of the server."""
         pred = self.ml_model(
             torch.from_numpy(ml_input).float()).data.numpy()
+        self.logger.info(f"Prediction tensor: {pred}")
+        # pred.argmax: Numpy function to return index of max elem
+        self.logger.info(
+            f"""PREDICTION: \
+{self.ML_WORKLOAD_MAPPING[pred.argmax()]}""")
+        return self.ML_WORKLOAD_MAPPING[pred.argmax()]
+
+    def predict_using_rf(self, ml_input):
+        pred = self.ml_model.predict(
+            ml_input.reshape(1,-1)).flatten()
         self.logger.info(f"Prediction tensor: {pred}")
         # pred.argmax: Numpy function to return index of max elem
         self.logger.info(
@@ -398,9 +422,11 @@ class SimpleSwitch13(app_manager.RyuApp):
             "workload_type": cluster_name,
             "selected_server": server[0],
             "latency": self.topo_cluster_cfg["host_latency"][str(server[1])],
-            "bandwidth": self.topo_cluster_cfg["host_bandwidth"][str(server[1])]
+            "bandwidth": self.topo_cluster_cfg["host_bandwidth"][str(server[1])],
+            "time_handled": time.time()
         })
         self.data_writer.writerow(data)
+        self.experiment_file.flush()
         return server
 
     def get_utils(self):
@@ -416,8 +442,8 @@ class SimpleSwitch13(app_manager.RyuApp):
                 util_balance[server[0]] = self.util_queues[cluster_name].queue.count(server[0]) / qsize
         return util_balance
 
-    def fake_ml(self, ml_input):
-        return ml_input[1]
+    def fake_ml(self):
+        return random.choice(list(self.ML_WORKLOAD_MAPPING.values()))
 
     def handle_tcp_packet(
             self, datapath, in_port, ip_header, parser,
