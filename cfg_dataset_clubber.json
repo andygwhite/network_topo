@@ -4,7 +4,7 @@
     "create_modified_pcap": true,
     "length_threshold_cpu": 400,
     "max_packets_per_file": 100,
-    "dataset_output_dir": "./labeled_datasets",
+    "dataset_output_dir": "./labeled_datasets_VPN_no_range",
     "output_dataset_labels": ["cpu", "network", "memory"],
     "csv_fieldnames": ["category","permissions","priority","tiq", "tod", "power", "packet_length", "cpu","network","memory"],
     "power_consumption_ranges_by_category": {
@@ -16,6 +16,9 @@
         "5": [3,4,5],
         "6": [0,1,2],
         "7": [2,3,4]
+    },
+    "priority_ranges_by_category": {
+        "0": [0,1,2,3,4,5,6,7]
     },
     "app_categories": {
         "Amazon Prime Video": 1,
@@ -39,7 +42,18 @@
         "TunnelBear": 0,
         "Ultrasurf": 5,
         "WhatsApp": 1,
-        "Zoom": 1
+        "Zoom": 1,
+        "L2TP": 0,
+        "L2TP IPsec": 0,
+        "Mail": 4,
+        "Meet": 1,
+        "SSH": 0,
+        "OpenVPN": 0,
+        "PPTP": 0,
+        "SSTP": 0,
+        "Non_Streaming": 5,
+        "Streaming": 1,
+        "WireGuard": 0
     },
     "destination_ip": "10.0.0.100"
 }

@@ -100,11 +100,16 @@ class Clubber:
         print(self.generated_dataset)
         for row in itertools.product(POSSIBLE_CATEGORY, POSSIBLE_PERMISSIONS, POSSIBLE_PRIORITY, POSSIBLE_TIQ, POSSIBLE_TOD):
             # Algorithm to determine ranking
-            # Note that this now includes network intensive
+            # Check to see if there is a restricted priority range based on the
+            # content type (Special range for VPNs!)
+            if row[0] in self.cfg["priority_ranges_by_category"]:
+                priority = random.choice(self.cfg["priority_ranges_by_category"][f"{row[0]}"])
+            else:
+                priority = row[2]
             row = {
                 'category': row[0],
                 'permissions': row[1],
-                'priority': row[2],
+                'priority': priority,
                 'tiq': row[3],
                 'tod': row[4],
                 'power': random.choice(self.cfg["power_consumption_ranges_by_category"][f"{row[0]}"]),
