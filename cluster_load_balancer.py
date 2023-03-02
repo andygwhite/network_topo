@@ -51,14 +51,26 @@ class UtilizationQueue(Queue):
     flushing the queue when it gets too full"""
     def __init__(self, maxsize=0):
         super().__init__(maxsize=maxsize)
+        # Track the ratio of sum to qsize (percentage full)
+        self.current_utilization = 0
+        # Track the sum each time an item is pushed onto queue
+        self.sum = 0
 
     def util_put(self, item, n=1):
         """put method that allows for multiple insertions and manages pops"""
         if(self.qsize() + n >= self.maxsize):
             for i in range(int(n)):
-                self.get()
+                self.sum -= self.get()
         for i in range(int(n)):
+            self.sum += item
             self.put(item)
+
+    def get_utilization(self):
+        if self.qsize() == 0:
+            return 0
+        return self.sum / self.qsize()
+    
+
 
 
 class SimpleSwitch13(app_manager.RyuApp):
@@ -103,9 +115,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.mac_to_port = {}
         self.ml_model = None
         self.packet_counter = 1
-        # Instantiate utilization queue for each cluster
-        self.util_queues = {cluster_name: UtilizationQueue(400)
-                            for cluster_name in self.ML_SERVER_MAPPING.keys()}
         # Use this to track power consumption btw first and second stage
         self.current_packet_power = 0
         # Track the dst workload cluster btw first and second stage
@@ -119,9 +128,13 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.topo_cluster_cfg = json.load(f)
         with open('./ip_option_decode.json', 'r') as f:
             self.ip_option_decode = json.load(f)
+        # Instantiate utilization queue for each cluster
+        # Each host gets its own util queue to track its local utilization
+        self.util_queues = {cluster_name: [UtilizationQueue(self.topo_cluster_cfg["util_queue_length"]) for i in range(4)]
+                            for cluster_name in self.ML_SERVER_MAPPING.keys()}
         fieldnames = ["workload_type", "selected_server", "latency", "bandwidth", "time_handled"]
-        for cluster in self.ML_SERVER_MAPPING.values():
-            fieldnames.extend([server[0] for server in cluster])
+        for cluster in self.ML_SERVER_MAPPING.keys():
+            fieldnames.extend([f"{cluster}_{i}" for i in range(4)])
         self.experiment_file = open('./experiment.csv', 'w')
         self.data_writer = csv.DictWriter(self.experiment_file, fieldnames)
         self.data_writer.writeheader()
@@ -413,10 +426,11 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Calculate current utilization percentages in this cluster
         data = {}
         data.update(self.get_utils())
-        # For now, do a round robing selection
+        # For now, do a round robin selection
         server = next(self.ROUND_ROBIN_ML_SERVER_MAPPING[cluster_name])
-        # server = random.choice(self.ML_SERVER_MAPPING[cluster_name])
-        self.util_queues[cluster_name].util_put(server[0], self.current_packet_power)
+        # Pushes a '1' onto the util queue for the given server
+        # Index in list calculated using mod function (four servers per cluster)
+        self.update_all_util_queues(cluster_name, (int(server[1]) + 1) % 4, self.current_packet_power)
         self.logger.info(f"Selecting random server in cluster: {server}")
         data.update({
             "workload_type": cluster_name,
@@ -429,18 +443,37 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.experiment_file.flush()
         return server
 
+    # def get_utils(self):
+    #     """Helper function to return a dict of all the current server utils"""
+    #     util_balance = {}
+    #     for cluster_name in self.ML_SERVER_MAPPING.keys():
+    #         for server in self.ML_SERVER_MAPPING[cluster_name]:
+    #             qsize = self.util_queues[cluster_name].qsize()
+    #             # Avoid div0 exception
+    #             if qsize == 0:
+    #                 util_balance[server[0]] = 0
+    #                 continue
+    #             util_balance[server[0]] = self.util_queues[cluster_name].queue.count(server[0]) / qsize
+    #     return util_balance
+
     def get_utils(self):
-        """Helper function to return a dict of all the current server utils"""
-        util_balance = {}
+        """Returns the calculated utilization for every queue"""
+        all_utilizations = {}
         for cluster_name in self.ML_SERVER_MAPPING.keys():
-            for server in self.ML_SERVER_MAPPING[cluster_name]:
-                qsize = self.util_queues[cluster_name].qsize()
-                # Avoid div0 exception
-                if qsize == 0:
-                    util_balance[server[0]] = 0
-                    continue
-                util_balance[server[0]] = self.util_queues[cluster_name].queue.count(server[0]) / qsize
-        return util_balance
+            for i, util_queue in enumerate(self.util_queues[cluster_name]):
+                all_utilizations[f"{cluster_name}_{i}"] = util_queue.get_utilization()
+        return all_utilizations
+
+    def update_all_util_queues(self, cluster_name, server, n):
+        for cluster in self.ML_SERVER_MAPPING.keys():
+            for i in range(4):
+                if cluster == cluster_name and i == server:
+                    self.util_queues[cluster_name][server].util_put(1, n)
+                else:
+                    # Push back one item to represent one unit of time
+                    self.util_queues[cluster_name][server].util_put(0, 1)
+        
+
 
     def fake_ml(self):
         return random.choice(list(self.ML_WORKLOAD_MAPPING.values()))
