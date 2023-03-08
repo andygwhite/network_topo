@@ -68,7 +68,7 @@ class UtilizationQueue(Queue):
     def get_utilization(self):
         if self.qsize() == 0:
             return 0
-        return self.sum / self.qsize()
+        return self.sum / self.maxsize
     
 
 
@@ -138,18 +138,32 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.experiment_file = open('./experiment.csv', 'w')
         self.data_writer = csv.DictWriter(self.experiment_file, fieldnames)
         self.data_writer.writeheader()
-        if self.topo_cluster_cfg["ml_type"] == 'lr':
-            if not os.path.exists(self.topo_cluster_cfg['lr_model_path']):
+        if self.topo_cluster_cfg["first_stage_ml_type"] == 'lr':
+            if not os.path.exists(self.topo_cluster_cfg['first_stage_lr_model_path']):
                 raise FileNotFoundError("Cannot find ML model!")
-            self.ml_model = torch.load(self.topo_cluster_cfg['lr_model_path'])
-            self.ml_model.eval()
-        elif self.topo_cluster_cfg["ml_type"] == 'rf':
-            if not os.path.exists(self.topo_cluster_cfg['rf_model_path']):
+            self.first_stage_ml_model = torch.load(self.topo_cluster_cfg['first_stage_lr_model_path'])
+            self.first_stage_ml_model.eval()
+        elif self.topo_cluster_cfg["first_stage_ml_type"] == 'rf':
+            if not os.path.exists(self.topo_cluster_cfg['first_stage_rf_model_path']):
                 raise FileNotFoundError("Cannot find ML model!")
-            self.ml_model = joblib.load(self.topo_cluster_cfg['rf_model_path'])
+            self.first_stage_ml_model = joblib.load(self.topo_cluster_cfg['first_stage_rf_model_path'])
         else:
-            self.logger.warning("No ML model selected! Using random predictions")
-            self.ml_model = None
+            self.logger.warning("No first stage ML model selected! Using random predictions")
+            self.first_stage_ml_model = None
+
+        # Repeat for loading second stage model
+        if self.topo_cluster_cfg["second_stage_ml_type"] == 'lr':
+            if not os.path.exists(self.topo_cluster_cfg['second_stage_lr_model_path']):
+                raise FileNotFoundError("Cannot find ML model!")
+            self.second_stage_ml_model = torch.load(self.topo_cluster_cfg['second_stage_lr_model_path'])
+            self.second_stage_ml_model.eval()
+        elif self.topo_cluster_cfg["second_stage_ml_type"] == 'rf':
+            if not os.path.exists(self.topo_cluster_cfg['second_stage_rf_model_path']):
+                raise FileNotFoundError("Cannot find ML model!")
+            self.second_stage_ml_model = joblib.load(self.topo_cluster_cfg['second_stage_rf_model_path'])
+        else:
+            self.logger.warning("No second stage ML model selected! Using random predictions")
+            self.second_stage_ml_model = None
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -387,20 +401,20 @@ class SimpleSwitch13(app_manager.RyuApp):
         if self.ml_model is None:
             return self.fake_ml()
         if self.topo_cluster_cfg['ml_type'] == 'lr':
-            return self.predict_using_lr(ml_input)
+            return self.first_stage_predict_using_lr(ml_input)
         elif self.topo_cluster_cfg['ml_type'] == 'rf':
-            return self.predict_using_rf(ml_input)
+            return self.first_stage_predict_using_rf(ml_input)
         if self.fake_ml(ml_input) == 2:
             return self.SERVER2_IP, self.SERVER2_PORT
         return self.SERVER1_IP, self.SERVER1_PORT
 
-    def predict_using_lr(self, ml_input):
+    def first_stage_predict_using_lr(self, ml_input):
         """Uses ML Model to predict target server.
         ML output will be 3-element array with the
         highest value corresponding to the predicted
         server. Each index is mapped to the correct IP
         address of the server."""
-        pred = self.ml_model(
+        pred = self.first_stage_ml_model(
             torch.from_numpy(ml_input).float()).data.numpy()
         self.logger.info(f"Prediction tensor: {pred}")
         # pred.argmax: Numpy function to return index of max elem
@@ -409,8 +423,8 @@ class SimpleSwitch13(app_manager.RyuApp):
 {self.ML_WORKLOAD_MAPPING[pred.argmax()]}""")
         return self.ML_WORKLOAD_MAPPING[pred.argmax()]
 
-    def predict_using_rf(self, ml_input):
-        pred = self.ml_model.predict(
+    def first_stage_predict_using_rf(self, ml_input):
+        pred = self.first_stage_ml_model.predict(
             ml_input.reshape(1,-1)).flatten()
         self.logger.info(f"Prediction tensor: {pred}")
         # pred.argmax: Numpy function to return index of max elem
@@ -419,19 +433,37 @@ class SimpleSwitch13(app_manager.RyuApp):
 {self.ML_WORKLOAD_MAPPING[pred.argmax()]}""")
         return self.ML_WORKLOAD_MAPPING[pred.argmax()]
 
+    def second_stage_predict_using_rf(self, cluster, ml_input):
+        pred = float(self.second_stage_ml_model.predict(
+            ml_input.reshape(1,-1)).flatten()[0])
+        self.logger.info(f"Prediction input: {ml_input}")
+        # pred.argmax: Numpy function to return index of max elem
+        self.logger.info(
+            f"SECOND STAGE PREDICTION: {pred}")
+        return self.ML_SERVER_MAPPING[cluster][round(pred)]
+
     def determine_output_host(self, ip_header, cluster_name):
         """Determine the best output server from a cluster
         based on machine learning algorithm"""
         # Do machine learning here
         # Calculate current utilization percentages in this cluster
         data = {}
-        data.update(self.get_utils())
+        utils = self.get_utils()
+        data.update(utils)
         # For now, do a round robin selection
-        server = next(self.ROUND_ROBIN_ML_SERVER_MAPPING[cluster_name])
+        # self.second_stage_predict_using_rf(self.get_network_conditions(cluster_name, utils))
+        # server = next(self.ROUND_ROBIN_ML_SERVER_MAPPING[cluster_name])
+        if self.second_stage_ml_model is None:
+            server = next(self.ROUND_ROBIN_ML_SERVER_MAPPING[cluster_name])
+        if self.topo_cluster_cfg['second_stage_ml_type'] == 'lr':
+            server = self.second_stage_predict_using_lr(self.get_network_conditions(cluster_name, utils))
+        elif self.topo_cluster_cfg['second_stage_ml_type'] == 'rf':
+            server = self.second_stage_predict_using_rf(cluster_name, self.get_network_conditions(cluster_name, utils))
         # Pushes a '1' onto the util queue for the given server
         # Index in list calculated using mod function (four servers per cluster)
-        self.update_all_util_queues(cluster_name, (int(server[1]) + 1) % 4, self.current_packet_power)
-        self.logger.info(f"Selecting random server in cluster: {server}")
+        self.logger.info(f"Server # in cluster: {(int(server[1]) - 1) % 4}")
+        self.update_all_util_queues(cluster_name, (int(server[1]) - 1) % 4, self.current_packet_power)
+        self.logger.info(f"Selected server in cluster: {server}")
         data.update({
             "workload_type": cluster_name,
             "selected_server": server[0],
@@ -443,19 +475,6 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.experiment_file.flush()
         return server
 
-    # def get_utils(self):
-    #     """Helper function to return a dict of all the current server utils"""
-    #     util_balance = {}
-    #     for cluster_name in self.ML_SERVER_MAPPING.keys():
-    #         for server in self.ML_SERVER_MAPPING[cluster_name]:
-    #             qsize = self.util_queues[cluster_name].qsize()
-    #             # Avoid div0 exception
-    #             if qsize == 0:
-    #                 util_balance[server[0]] = 0
-    #                 continue
-    #             util_balance[server[0]] = self.util_queues[cluster_name].queue.count(server[0]) / qsize
-    #     return util_balance
-
     def get_utils(self):
         """Returns the calculated utilization for every queue"""
         all_utilizations = {}
@@ -465,15 +484,26 @@ class SimpleSwitch13(app_manager.RyuApp):
         return all_utilizations
 
     def update_all_util_queues(self, cluster_name, server, n):
-        for cluster in self.ML_SERVER_MAPPING.keys():
-            for i in range(4):
-                if cluster == cluster_name and i == server:
-                    self.util_queues[cluster_name][server].util_put(1, n)
-                else:
-                    # Push back one item to represent one unit of time
-                    self.util_queues[cluster_name][server].util_put(0, 1)
-        
+        for i in range(4):
+            if i == server:
+                self.util_queues[cluster_name][server].util_put(1, n)
+            else:
+                # Push back one item to represent one unit of time
+                self.util_queues[cluster_name][server].util_put(0, 1)
 
+    def get_network_conditions(self, cluster_name, utils):
+        """Returns a list of the throughput, packet loss, rtt,
+        and utilization of a given cluster.
+        Takes current utils to avoid calculating twice"""
+        # Get the host indexes corresponding to a given host
+        # Cast to str to index json config file
+        hosts = [str(server[1]) for server in self.ML_SERVER_MAPPING[cluster_name]]
+        conditions = [self.topo_cluster_cfg["host_bandwidth"][host] for host in hosts]
+        conditions.extend([1.00E-6 for host in hosts])
+        conditions.extend([float(self.topo_cluster_cfg["host_latency"][host].replace('ms', ''))*2 for host in hosts])
+        conditions.extend([cur_util for host_name, cur_util in utils.items() if host_name.find(cluster_name) != -1])
+        # self.logger.info(conditions)
+        return np.array(conditions)
 
     def fake_ml(self):
         return random.choice(list(self.ML_WORKLOAD_MAPPING.values()))
