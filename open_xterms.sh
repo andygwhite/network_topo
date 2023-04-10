@@ -1,2 +1,2 @@
-xterm h1 h2 h3 h4
+xterm h1 pgen ctgen
 exit

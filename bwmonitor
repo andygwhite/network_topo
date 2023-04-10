@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# bwmonitor.sh
+# 
+# usage: bwmonitor.sh <ifname> <interval> <duration>
+
+
+
+if [ "$#" -lt 3 ]; then
+    echo  "usage: $0 <ifname> <interval> <duration>"
+    exit
+fi
+
+ifname=$1
+interval=$2
+duration=$3
+
+
+count=$( bc <<< $duration/$interval )
+
+(
+for (( i=0; i<="count"; i++ ))
+do
+  awk -v ifname=$ifname '$1 ~ ifname {print $2}' /proc/net/dev &
+  sleep $interval
+done
+) | awk -W interactive -v intvl=$interval '{
+        if (last != 0){
+                print ($1-last)*8/intvl
+        }
+        last = $1
+}'

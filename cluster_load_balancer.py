@@ -43,50 +43,16 @@ from queue import Queue
 import csv
 import itertools
 import joblib
+from UtilizationQueue import UtilizationQueue
+
 FIXED_EPOCH_TIME = 1668036116
-
-
-class UtilizationQueue(Queue):
-    """Wrapper for queue which allows for multiple puts at once, handles
-    flushing the queue when it gets too full"""
-    def __init__(self, maxsize=0):
-        super().__init__(maxsize=maxsize)
-        # Track the ratio of sum to qsize (percentage full)
-        self.current_utilization = 0
-        # Track the sum each time an item is pushed onto queue
-        self.sum = 0
-
-    def util_put(self, item, n=1):
-        """put method that allows for multiple insertions and manages pops"""
-        if(self.qsize() + n >= self.maxsize):
-            for i in range(int(n)):
-                self.sum -= self.get()
-        for i in range(int(n)):
-            self.sum += item
-            self.put(item)
-
-    def get_utilization(self):
-        if self.qsize() == 0:
-            return 0
-        return self.sum / self.maxsize
-    
-
-
 
 class SimpleSwitch13(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
-    VIRTUAL_IP = '10.0.0.100'  # The virtual server IP
-
-    SERVER1_IP = '10.0.0.1'
     SERVER1_MAC = '00:00:00:00:00:01'
-    SERVER1_PORT = 1
-    SERVER2_IP = '10.0.0.2'
-    SERVER2_MAC = '00:00:00:00:00:02'
-    SERVER2_PORT = 2
-    SERVER3_IP = '10.0.0.3'
-    SERVER3_MAC = '00:00:00:00:00:03'
-    SERVER3_PORT = 3
+
+    VIRTUAL_IP = '10.0.0.100'  # The virtual server IP
 
     PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
     # TESTING
@@ -112,9 +78,12 @@ class SimpleSwitch13(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
+        self.logger.setLevel(0)
         self.mac_to_port = {}
+        # self.logger.disabled = True
         self.ml_model = None
         self.packet_counter = 1
+        # self.logger.setLevel('CRITICAL')
         # Use this to track power consumption btw first and second stage
         self.current_packet_power = 0
         # Track the dst workload cluster btw first and second stage
@@ -133,6 +102,10 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.util_queues = {cluster_name: [UtilizationQueue(self.topo_cluster_cfg["util_queue_length"]) for i in range(4)]
                             for cluster_name in self.ML_SERVER_MAPPING.keys()}
         fieldnames = ["workload_type", "selected_server", "latency", "bandwidth", "time_handled"]
+        fieldnames.extend([f"bandwidth_{i}" for i in range(4)])
+        fieldnames.extend([f"packetloss_{i}" for i in range(4)])
+        fieldnames.extend([f"rtt_{i}" for i in range(4)])
+        fieldnames.extend([f"utilization_{i}" for i in range(4)])
         for cluster in self.ML_SERVER_MAPPING.keys():
             fieldnames.extend([f"{cluster}_{i}" for i in range(4)])
         self.experiment_file = open('./experiment.csv', 'w')
@@ -143,13 +116,15 @@ class SimpleSwitch13(app_manager.RyuApp):
                 raise FileNotFoundError("Cannot find ML model!")
             self.first_stage_ml_model = torch.load(self.topo_cluster_cfg['first_stage_lr_model_path'])
             self.first_stage_ml_model.eval()
-        elif self.topo_cluster_cfg["first_stage_ml_type"] == 'rf':
-            if not os.path.exists(self.topo_cluster_cfg['first_stage_rf_model_path']):
-                raise FileNotFoundError("Cannot find ML model!")
-            self.first_stage_ml_model = joblib.load(self.topo_cluster_cfg['first_stage_rf_model_path'])
-        else:
+        elif self.topo_cluster_cfg["first_stage_ml_type"] == "none":
             self.logger.warning("No first stage ML model selected! Using random predictions")
             self.first_stage_ml_model = None
+        else:
+            model_path = self.topo_cluster_cfg[f'first_stage_{self.topo_cluster_cfg["first_stage_ml_type"]}_model_path']
+            self.logger.info(f"Loading {model_path}")
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Cannot find ML model at {model_path}!")
+            self.first_stage_ml_model = joblib.load(model_path)
 
         # Repeat for loading second stage model
         if self.topo_cluster_cfg["second_stage_ml_type"] == 'lr':
@@ -157,14 +132,25 @@ class SimpleSwitch13(app_manager.RyuApp):
                 raise FileNotFoundError("Cannot find ML model!")
             self.second_stage_ml_model = torch.load(self.topo_cluster_cfg['second_stage_lr_model_path'])
             self.second_stage_ml_model.eval()
-        elif self.topo_cluster_cfg["second_stage_ml_type"] == 'rf':
-            if not os.path.exists(self.topo_cluster_cfg['second_stage_rf_model_path']):
-                raise FileNotFoundError("Cannot find ML model!")
-            self.second_stage_ml_model = joblib.load(self.topo_cluster_cfg['second_stage_rf_model_path'])
-        else:
+        elif self.topo_cluster_cfg["second_stage_ml_type"] == "none":
             self.logger.warning("No second stage ML model selected! Using random predictions")
             self.second_stage_ml_model = None
-
+        else:
+            model_path = self.topo_cluster_cfg[f'second_stage_{self.topo_cluster_cfg["second_stage_ml_type"]}_model_path']
+            self.logger.info(f"Loading {model_path}")
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Cannot find ML model at {model_path}!")
+            self.second_stage_ml_model = joblib.load(model_path)
+        # if self.topo_cluster_cfg["second_stage_ml_type"] == 'svm':
+        #     if not os.path.exists(self.topo_cluster_cfg['second_stage_svm_model_path']):
+        #         raise FileNotFoundError("Cannot find ML model!")
+        #     self.second_stage_ml_model = joblib.load(self.topo_cluster_cfg['second_stage_svm_model_path'])
+        # elif self.topo_cluster_cfg["second_stage_ml_type"] == 'rf':
+        #     if not os.path.exists(self.topo_cluster_cfg['second_stage_rf_model_path']):
+        #         raise FileNotFoundError("Cannot find ML model!")
+        #     self.second_stage_ml_model = joblib.load(self.topo_cluster_cfg['second_stage_rf_model_path'])
+        # else:
+            
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
@@ -248,11 +234,11 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Handle ARP Packet
         if eth.ethertype == ether_types.ETH_TYPE_ARP:
             arp_header = pkt.get_protocol(arp.arp)
-            if arp_header.dst_ip == self.VIRTUAL_IP and arp_header.opcode == arp.ARP_REQUEST:
+            if arp_header.dst_ip in [self.VIRTUAL_IP, '10.0.0.111'] and arp_header.opcode == arp.ARP_REQUEST:
                 self.logger.info("***************************")
                 self.logger.info("---Handle ARP Packet---")
                 # Build an ARP reply packet using source IP and source MAC
-                reply_packet = self.generate_arp_reply(arp_header.src_ip, arp_header.src_mac)
+                reply_packet = self.generate_arp_reply(arp_header.src_ip, arp_header.src_mac, original_dst=arp_header.dst_ip)
                 actions = [parser.OFPActionOutput(in_port)]
                 packet_out = parser.OFPPacketOut(datapath=datapath, in_port=ofproto.OFPP_ANY,
                                                  data=reply_packet.data, actions=actions, buffer_id=0xffffffff)
@@ -267,14 +253,14 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.logger.info("---Handle TCP Packet---")
             # Built-in Ryu function to extract packet header
             ip_header = pkt.get_protocol(ipv4.ipv4)
-
-            # Send to prediction function
-            packet_handled = self.handle_tcp_packet(
-                datapath, in_port, ip_header,
-                parser, dst_mac, src_mac, msg, ofproto)
-            self.logger.info("TCP packet handled: " + str(packet_handled))
-            if packet_handled:
-                return
+            if ip_header.dst in [self.VIRTUAL_IP, '10.0.0.111']:
+                # Send to prediction function
+                packet_handled = self.handle_tcp_packet(
+                    datapath, in_port, ip_header,
+                    parser, dst_mac, src_mac, msg, ofproto)
+                self.logger.info("TCP packet handled: " + str(packet_handled))
+                if packet_handled:
+                    return
 
         # Send if other packet
         data = None
@@ -283,16 +269,17 @@ class SimpleSwitch13(app_manager.RyuApp):
 
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                   in_port=in_port, actions=actions, data=data)
+        self.logger.info("Default action taken")
         datapath.send_msg(out)
 
     # Source IP and MAC passed here now become the destination for the reply packet
-    def generate_arp_reply(self, dst_ip, dst_mac):
+    def generate_arp_reply(self, dst_ip, dst_mac, original_dst):
         self.logger.info("Generating ARP Reply Packet")
         self.logger.info("ARP request client ip: " + dst_ip + ", client mac: " + dst_mac)
         arp_target_ip = dst_ip  # the sender ip
         arp_target_mac = dst_mac  # the sender mac
         # Making the load balancer IP as source IP
-        src_ip = self.VIRTUAL_IP
+        src_ip = original_dst
         src_mac = self.select_src_mac(arp_target_ip)
         self.logger.info("Selected server MAC: " + src_mac)
 
@@ -398,12 +385,12 @@ class SimpleSwitch13(app_manager.RyuApp):
         self.packet_counter += 1
         # Track the power consumption of the given packet
         self.current_packet_power = options_organized['power']
-        if self.ml_model is None:
+        if self.first_stage_ml_model is None:
             return self.fake_ml()
-        if self.topo_cluster_cfg['ml_type'] == 'lr':
+        if self.topo_cluster_cfg['first_stage_ml_type'] == 'lr':
             return self.first_stage_predict_using_lr(ml_input)
-        elif self.topo_cluster_cfg['ml_type'] == 'rf':
-            return self.first_stage_predict_using_rf(ml_input)
+        else:
+            return self.first_stage_predict_using_sklearn(ml_input)
         if self.fake_ml(ml_input) == 2:
             return self.SERVER2_IP, self.SERVER2_PORT
         return self.SERVER1_IP, self.SERVER1_PORT
@@ -423,6 +410,29 @@ class SimpleSwitch13(app_manager.RyuApp):
 {self.ML_WORKLOAD_MAPPING[pred.argmax()]}""")
         return self.ML_WORKLOAD_MAPPING[pred.argmax()]
 
+    def second_stage_predict_using_lr(self, cluster, ml_input):
+        """Uses ML Model to predict target server.
+        ML output will be 3-element array with the
+        highest value corresponding to the predicted
+        server. Each index is mapped to the correct IP
+        address of the server."""
+        pred = self.second_stage_ml_model(
+            torch.from_numpy(ml_input).float()).data.numpy()
+        self.logger.info(f"Prediction tensor: {pred}")
+        # pred.argmax: Numpy function to return index of max elem
+        self.logger.info(
+            f"""PREDICTION: \
+{self.ML_SERVER_MAPPING[cluster][pred.argmax()]}""")
+        return self.ML_SERVER_MAPPING[cluster][pred.argmax()]
+
+    def first_stage_predict_using_sklearn(self, ml_input):
+        pred = self.first_stage_ml_model.predict(
+            ml_input.reshape(1,-1)).flatten()
+        self.logger.info(f"Prediction input: {ml_input}")
+        self.logger.info(
+            f"FIRST STAGE PREDICTION: {pred}")
+        return self.ML_WORKLOAD_MAPPING[int(pred)]
+
     def first_stage_predict_using_rf(self, ml_input):
         pred = self.first_stage_ml_model.predict(
             ml_input.reshape(1,-1)).flatten()
@@ -434,13 +444,22 @@ class SimpleSwitch13(app_manager.RyuApp):
         return self.ML_WORKLOAD_MAPPING[pred.argmax()]
 
     def second_stage_predict_using_rf(self, cluster, ml_input):
-        pred = float(self.second_stage_ml_model.predict(
-            ml_input.reshape(1,-1)).flatten()[0])
+        pred = self.second_stage_ml_model.predict(
+            ml_input.reshape(1,-1)).flatten()
+        self.logger.info(f"Prediction input: {ml_input}")
+        # pred.argmax: Numpy function to return index of max elem
+        self.logger.info(
+            f"SECOND STAGE PREDICTION: {pred} -> {pred.argmax()}")
+        return self.ML_SERVER_MAPPING[cluster][pred.argmax()]
+    
+    def second_stage_predict(self, cluster, ml_input):
+        pred = self.second_stage_ml_model.predict(
+            ml_input.reshape(1,-1)).flatten()
         self.logger.info(f"Prediction input: {ml_input}")
         # pred.argmax: Numpy function to return index of max elem
         self.logger.info(
             f"SECOND STAGE PREDICTION: {pred}")
-        return self.ML_SERVER_MAPPING[cluster][round(pred)]
+        return self.ML_SERVER_MAPPING[cluster][int(pred)]
 
     def determine_output_host(self, ip_header, cluster_name):
         """Determine the best output server from a cluster
@@ -453,12 +472,16 @@ class SimpleSwitch13(app_manager.RyuApp):
         # For now, do a round robin selection
         # self.second_stage_predict_using_rf(self.get_network_conditions(cluster_name, utils))
         # server = next(self.ROUND_ROBIN_ML_SERVER_MAPPING[cluster_name])
+        ml_input = self.get_network_conditions(cluster_name, utils)
         if self.second_stage_ml_model is None:
             server = next(self.ROUND_ROBIN_ML_SERVER_MAPPING[cluster_name])
-        if self.topo_cluster_cfg['second_stage_ml_type'] == 'lr':
-            server = self.second_stage_predict_using_lr(self.get_network_conditions(cluster_name, utils))
-        elif self.topo_cluster_cfg['second_stage_ml_type'] == 'rf':
-            server = self.second_stage_predict_using_rf(cluster_name, self.get_network_conditions(cluster_name, utils))
+        # elif self.topo_cluster_cfg['second_stage_ml_type'] == 'rf':
+        #     server = self.second_stage_predict(cluster_name, ml_input)
+        elif self.topo_cluster_cfg['second_stage_ml_type'] == 'lr':
+            return self.second_stage_predict_using_lr(cluster_name, ml_input)
+        else:
+            server = self.second_stage_predict(cluster_name, ml_input)
+
         # Pushes a '1' onto the util queue for the given server
         # Index in list calculated using mod function (four servers per cluster)
         self.logger.info(f"Server # in cluster: {(int(server[1]) - 1) % 4}")
@@ -471,6 +494,10 @@ class SimpleSwitch13(app_manager.RyuApp):
             "bandwidth": self.topo_cluster_cfg["host_bandwidth"][str(server[1])],
             "time_handled": time.time()
         })
+        # data.update({f"bandwidth_{i}": ml_input[i] for i in range(4)})
+        # data.update({f"packetloss_{i}": ml_input[4+i] for i in range(4)})
+        # data.update({f"rtt_{i}": ml_input[8+i] for i in range(4)})
+        # data.update({f"utilization_{i}": ml_input[12+i] for i in range(4)})
         self.data_writer.writerow(data)
         self.experiment_file.flush()
         return server
@@ -484,12 +511,15 @@ class SimpleSwitch13(app_manager.RyuApp):
         return all_utilizations
 
     def update_all_util_queues(self, cluster_name, server, n):
-        for i in range(4):
-            if i == server:
-                self.util_queues[cluster_name][server].util_put(1, n)
-            else:
-                # Push back one item to represent one unit of time
-                self.util_queues[cluster_name][server].util_put(0, 1)
+        """Pushes back an empty value to the utilization queue to represent
+        one unit of time passing"""
+        for cluster, cluster_util_queue in self.util_queues.items():
+            for i in range(4):
+                if cluster == cluster_name and i == server:
+                    self.util_queues[cluster_name][server].util_put(1, n)
+                else:
+                    # Push back one item to represent one unit of time
+                    self.util_queues[cluster_name][server].util_put(0, 1)
 
     def get_network_conditions(self, cluster_name, utils):
         """Returns a list of the throughput, packet loss, rtt,
@@ -503,9 +533,11 @@ class SimpleSwitch13(app_manager.RyuApp):
         conditions.extend([float(self.topo_cluster_cfg["host_latency"][host].replace('ms', ''))*2 for host in hosts])
         conditions.extend([cur_util for host_name, cur_util in utils.items() if host_name.find(cluster_name) != -1])
         # self.logger.info(conditions)
+        # Only give the utilization data
         return np.array(conditions)
 
     def fake_ml(self):
+        self.logger.info("Using random choice")
         return random.choice(list(self.ML_WORKLOAD_MAPPING.values()))
 
     def handle_tcp_packet(
@@ -515,8 +547,17 @@ class SimpleSwitch13(app_manager.RyuApp):
         Gets ML predicted cluster (cpu, network, memory)
         and then determines the best host in this cluster"""
         packet_handled = False
-        server_dst_ip, server_out_port = self.determine_output_host(
-            ip_header, self.determine_output_cluster(ip_header))
+        if ip_header.dst == '10.0.0.111':
+            self.logger.info("Incoming control packet!")
+            return self.handle_control_packet(ip_header)
+        is_ct_packet = ip_header.dst != self.VIRTUAL_IP
+        if is_ct_packet:
+            self.logger.info(f"Cross traffic packet headed for {ip_header.dst}")
+            server_dst_ip, server_out_port = (
+                ip_header.dst, int(ip_header.dst.replace('10.0.0.', '')))
+        else:
+            server_dst_ip, server_out_port = self.determine_output_host(
+                ip_header, self.determine_output_cluster(ip_header))
         self.logger.info(f"Sending to server {server_dst_ip} on port {server_out_port}")
         actions = [parser.OFPActionSetField(ipv4_dst=server_dst_ip),
                     parser.OFPActionOutput(server_out_port)]
@@ -529,31 +570,36 @@ class SimpleSwitch13(app_manager.RyuApp):
             buffer_id=msg.buffer_id,
             in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
-                # Route to server
-        # match = parser.OFPMatch(
-        #     in_port=in_port,
-        #     eth_type=ETH_TYPE_IP,
-        #     ip_proto=ip_header.proto,
-        #     ipv4_dst=self.VIRTUAL_IP)
-        # self.add_flow(datapath, 20, match, actions)
-        # self.logger.info("<==== Added TCP Flow- Route to Server: " + str(server_dst_ip) +
-        #                     " from Client :" + str(ip_header.src) + " on Switch Port:" +
-        #                     str(server_out_port) + "====>")
+        if not is_ct_packet:
+            packet_handled = True
+            return packet_handled
+
+        # Route to server
+        match = parser.OFPMatch(
+            in_port=in_port,
+            eth_type=ETH_TYPE_IP,
+            ip_proto=ip_header.proto,
+            ipv4_dst=ip_header.dst)
+        self.add_flow(datapath, 20, match, actions)
+        self.logger.info("<==== Added TCP Flow- Route to Server: " + str(server_dst_ip) +
+                            " from Client :" + str(ip_header.src) + " on Switch Port:" +
+                            str(server_out_port) + "====>")
 
         # Reverse route from server
-        # match = parser.OFPMatch(in_port=server_out_port, eth_type=ETH_TYPE_IP,
-        #                         ip_proto=ip_header.proto,
-        #                         ipv4_src=server_dst_ip,
-        #                         eth_dst=src_mac)
-        # actions = [parser.OFPActionSetField(ipv4_src=self.VIRTUAL_IP),
-        #             parser.OFPActionOutput(in_port)]
+        match = parser.OFPMatch(in_port=server_out_port, eth_type=ETH_TYPE_IP,
+                                ip_proto=ip_header.proto,
+                                ipv4_src=server_dst_ip,
+                                eth_dst=src_mac)
+        actions = [parser.OFPActionSetField(ipv4_src=self.VIRTUAL_IP),
+                    parser.OFPActionOutput(in_port)]
 
-        # self.add_flow(datapath, 20, match, actions)
-        # self.logger.info("<==== Added TCP Flow- Reverse route from Server: " + str(server_dst_ip) +
-        #                     " to Client: " + str(src_mac) + " on Switch Port:" +
-        #                     str(in_port) + "====>")
+        self.add_flow(datapath, 20, match, actions)
+        self.logger.info("<==== Added TCP Flow- Reverse route from Server: " + str(server_dst_ip) +
+                            " to Client: " + str(src_mac) + " on Switch Port:" +
+                            str(in_port) + "====>")
         packet_handled = True
         return packet_handled
+
 
 def quit():
     sys.exit()

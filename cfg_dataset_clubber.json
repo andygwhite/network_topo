@@ -3,8 +3,8 @@
     "pcap_dataset_main_dir": "./Network-Traffic-Dataset-All",
     "create_modified_pcap": true,
     "length_threshold_cpu": 400,
-    "max_packets_per_file": 100,
-    "dataset_output_dir": "./labeled_datasets_VPN_no_range",
+    "max_packets_per_file": 250,
+    "dataset_output_dir": "./labeled_datasets",
     "output_dataset_labels": ["cpu", "network", "memory"],
     "csv_fieldnames": ["category","permissions","priority","tiq", "tod", "power", "packet_length", "cpu","network","memory"],
     "power_consumption_ranges_by_category": {
@@ -18,7 +18,7 @@
         "7": [2,3,4]
     },
     "priority_ranges_by_category": {
-        "0": [0,1,2,3,4,5,6,7]
+        "0": [4,5,6,7]
     },
     "app_categories": {
         "Amazon Prime Video": 1,

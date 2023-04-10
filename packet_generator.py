@@ -4,7 +4,7 @@
 import os
 import json
 import click
-from scapy.all import IP, IPOption, send, PcapReader
+from scapy.all import IP, IPOption, send, PcapReader, rdpcap
 import time
 
 
@@ -42,21 +42,34 @@ class PacketGeneratorJSON():
             if field_name == 'options':
                 scapy_pkt.options = [IPOption(bytearray(fv)) for fv in field_value]
             else:
-                print("Setting", field_name)
+                # print("Setting", field_name)
                 setattr(scapy_pkt, field_name, field_value)
         scapy_pkt.show()
         return scapy_pkt
 
 
 class PacketGeneratorPCAP:
-    def __init__(self, pcap_file):
-        if not os.path.exists(pcap_file):
-            raise FileNotFoundError("Could not find PCAP file!")
-        self.reader_iter = iter(PcapReader(pcap_file))
+    def __init__(self, pcap_files, count):
+        self.packet_lists = []
         self.counter = 1
+        self.count = count
+        for file in pcap_files:
+            if not os.path.exists(file):
+                raise FileNotFoundError("Could not find PCAP file!")
+            # self.reader_iter = iter(PcapReader(pcap_file))
+            self.packet_lists.append(rdpcap(file, count=self.count))
+
+    def send_all_packets(self):
+        counter = 0
+        for packet_list in self.packet_lists:
+            send(packet_list)
+            counter += len(packet_list)
+        print(counter)
 
     def send_next_packet(self):
         try:
+            if self.counter == self.count:
+                return False
             pkt = next(self.reader_iter)
             send(pkt)
             print(self.counter)
@@ -75,13 +88,15 @@ class PacketGeneratorPCAP:
 
 
 @click.command
-@click.argument("pcap_file")
+@click.option("-f", '--files', multiple=True, required=True)
 @click.option("-d", "--delay", default=0)
-def cli(pcap_file, delay):
-    gen = PacketGeneratorPCAP(pcap_file)
-    while gen.send_next_packet():
-        time.sleep(delay/1000)
-    exit(gen.get_count())
+@click.option("-c", "--count", default=-1)
+def cli(files, delay, count):
+    gen = PacketGeneratorPCAP(files, count)
+    # while gen.send_next_packet():
+    #     time.sleep(delay/1000)
+    gen.send_all_packets()
+    exit()
 
 
 if __name__ == "__main__":
