@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import random
 import time
 from ryu.base import app_manager
@@ -101,6 +102,9 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Each host gets its own util queue to track its local utilization
         self.util_queues = {cluster_name: [UtilizationQueue(self.topo_cluster_cfg["util_queue_length"]) for i in range(4)]
                             for cluster_name in self.ML_SERVER_MAPPING.keys()}
+        self.bandwidths = [self.topo_cluster_cfg["host_bandwidth"][str(i+1)] for i in range(12)]
+        self.round_trip_times = int([self.topo_cluster_cfg["host_latency"][str(i+1)] for i in range(12)].replace("ms",""))
+        self.packetlosses = [1e-6 for i in range(12)]
         fieldnames = ["workload_type", "selected_server", "latency", "bandwidth", "time_handled"]
         fieldnames.extend([f"bandwidth_{i}" for i in range(4)])
         fieldnames.extend([f"packetloss_{i}" for i in range(4)])
@@ -110,7 +114,7 @@ class SimpleSwitch13(app_manager.RyuApp):
             fieldnames.extend([f"{cluster}_{i}" for i in range(4)])
         self.experiment_file = open('./experiment.csv', 'w')
         self.data_writer = csv.DictWriter(self.experiment_file, fieldnames)
-        self.data_writer.writeheader()
+        # self.data_writer.writeheader()
         if self.topo_cluster_cfg["first_stage_ml_type"] == 'lr':
             if not os.path.exists(self.topo_cluster_cfg['first_stage_lr_model_path']):
                 raise FileNotFoundError("Cannot find ML model!")
@@ -245,6 +249,7 @@ class SimpleSwitch13(app_manager.RyuApp):
                 datapath.send_msg(packet_out)
                 self.logger.info("Sent the ARP reply packet")
                 return
+
         if eth.ethertype != ETH_TYPE_IP:
             self.logger.info("THIS IS NOT A TCP PACKET!")
 
@@ -253,7 +258,7 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.logger.info("---Handle TCP Packet---")
             # Built-in Ryu function to extract packet header
             ip_header = pkt.get_protocol(ipv4.ipv4)
-            if ip_header.dst in [self.VIRTUAL_IP, '10.0.0.111']:
+            if ip_header.dst == self.VIRTUAL_IP:
                 # Send to prediction function
                 packet_handled = self.handle_tcp_packet(
                     datapath, in_port, ip_header,
@@ -261,6 +266,8 @@ class SimpleSwitch13(app_manager.RyuApp):
                 self.logger.info("TCP packet handled: " + str(packet_handled))
                 if packet_handled:
                     return
+            elif ip_header.dst == '10.0.0.111':
+                packet_handled = self.handle_control_packet(pkt.protocols[-1].data.data)
 
         # Send if other packet
         data = None
@@ -491,13 +498,13 @@ class SimpleSwitch13(app_manager.RyuApp):
             "workload_type": cluster_name,
             "selected_server": server[0],
             "latency": self.topo_cluster_cfg["host_latency"][str(server[1])],
-            "bandwidth": self.topo_cluster_cfg["host_bandwidth"][str(server[1])],
+            "bandwidth": self.bandwidths[server[1]-1],
             "time_handled": time.time()
         })
-        # data.update({f"bandwidth_{i}": ml_input[i] for i in range(4)})
-        # data.update({f"packetloss_{i}": ml_input[4+i] for i in range(4)})
-        # data.update({f"rtt_{i}": ml_input[8+i] for i in range(4)})
-        # data.update({f"utilization_{i}": ml_input[12+i] for i in range(4)})
+        data.update({f"bandwidth_{i}": ml_input[i] for i in range(4)})
+        data.update({f"packetloss_{i}": ml_input[4+i] for i in range(4)})
+        data.update({f"rtt_{i}": ml_input[8+i] for i in range(4)})
+        data.update({f"utilization_{i}": ml_input[12+i] for i in range(4)})
         self.data_writer.writerow(data)
         self.experiment_file.flush()
         return server
@@ -528,17 +535,30 @@ class SimpleSwitch13(app_manager.RyuApp):
         # Get the host indexes corresponding to a given host
         # Cast to str to index json config file
         hosts = [str(server[1]) for server in self.ML_SERVER_MAPPING[cluster_name]]
-        conditions = [self.topo_cluster_cfg["host_bandwidth"][host] for host in hosts]
-        conditions.extend([1.00E-6 for host in hosts])
-        conditions.extend([float(self.topo_cluster_cfg["host_latency"][host].replace('ms', ''))*2 for host in hosts])
+        conditions = self.bandwidths[int(hosts[0])-1:int(hosts[-1])]
+        conditions.extend(self.round_trip_times[int(hosts[0])-1:int(hosts[-1])])
+        conditions.extend(self.packetlosses[int(hosts[0])-1:int(hosts[-1])])
+        # conditions.extend([1.00E-6 for host in hosts])
+        # conditions.extend([float(self.topo_cluster_cfg["host_latency"][host].replace('ms', ''))*2 for host in hosts])
         conditions.extend([cur_util for host_name, cur_util in utils.items() if host_name.find(cluster_name) != -1])
-        # self.logger.info(conditions)
+        self.logger.info(conditions)
         # Only give the utilization data
         return np.array(conditions)
 
     def fake_ml(self):
         self.logger.info("Using random choice")
         return random.choice(list(self.ML_WORKLOAD_MAPPING.values()))
+
+    def handle_control_packet(self, payload):
+        """Updates the bandwidth table with values from control packet"""
+        self.bandwidths = [int.from_bytes(payload[i:i+4], 'big') for i in range(0, 48, 4)]
+        self.round_trip_times = [int.from_bytes(payload[i:i+4], 'big') for i in range(48, 48*2, 4)]
+        self.packetlosses = [int.from_bytes(payload[i:i+4], 'big') for i in range(48*2, len(payload), 4)]
+        self.logger.info(f"Updated bandwidths: {self.bandwidths}")
+        self.logger.info(f"Updated round trip times: {self.round_trip_times}")
+        self.logger.info(f"Updated packetlosses: {self.packetlosses}")
+
+        return True
 
     def handle_tcp_packet(
             self, datapath, in_port, ip_header, parser,
@@ -549,7 +569,7 @@ class SimpleSwitch13(app_manager.RyuApp):
         packet_handled = False
         if ip_header.dst == '10.0.0.111':
             self.logger.info("Incoming control packet!")
-            return self.handle_control_packet(ip_header)
+            return self.handle_control_packet(msg, ip_header, parser)
         is_ct_packet = ip_header.dst != self.VIRTUAL_IP
         if is_ct_packet:
             self.logger.info(f"Cross traffic packet headed for {ip_header.dst}")
