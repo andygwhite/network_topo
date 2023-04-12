@@ -51,7 +51,7 @@ class PacketGeneratorJSON():
 class PacketGeneratorPCAP:
     def __init__(self, pcap_files, count):
         self.packet_lists = []
-        self.counter = 1
+        self.packet_list_sizes = []
         self.count = count
         for file in pcap_files:
             if not os.path.exists(file):
@@ -60,11 +60,10 @@ class PacketGeneratorPCAP:
             self.packet_lists.append(rdpcap(file, count=self.count))
 
     def send_all_packets(self):
-        counter = 0
         for packet_list in self.packet_lists:
             send(packet_list)
-            counter += len(packet_list)
-        print(counter)
+            self.packet_list_sizes.append(len(packet_list))
+        print(','.join(str(v) for v in self.packet_list_sizes))
 
     def send_next_packet(self):
         try:
