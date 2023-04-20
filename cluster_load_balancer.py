@@ -44,7 +44,9 @@ from queue import Queue
 import csv
 import itertools
 import joblib
-from UtilizationQueue import UtilizationQueue
+from LBMinResourceModel import LBMinResourceModel
+# from UtilizationQueue import UtilizationQueue
+from UtilizationStack import UtilizationStack
 
 FIXED_EPOCH_TIME = 1668036116
 
@@ -55,7 +57,7 @@ class SimpleSwitch13(app_manager.RyuApp):
 
     VIRTUAL_IP = '10.0.0.100'  # The virtual server IP
 
-    PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
+    # PATH_TO_ML_MODEL = '/home/mininet/machine_learning/model.pt'
     # TESTING
     # CSV_CHECK = iter(genfromtxt("/home/mininet/network_topo/labeled_datasets/validation/all.csv", delimiter=','))
     # Skip header
@@ -70,6 +72,7 @@ class SimpleSwitch13(app_manager.RyuApp):
     ROUND_ROBIN_ML_SERVER_MAPPING = {
         key: itertools.cycle(val) for key, val in ML_SERVER_MAPPING.items()
     }
+    
     # maps index of ML algorithm output to the corresponding workload type
     ML_WORKLOAD_MAPPING = {
         0: "cpu",
@@ -77,9 +80,11 @@ class SimpleSwitch13(app_manager.RyuApp):
         2: "memory"
     }
 
+    ROUND_ROBIN_ML_CLUSTER_MAPPING = itertools.cycle(list(ML_WORKLOAD_MAPPING.values()))
+
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
-        self.logger.setLevel(0)
+        self.logger.setLevel(5)
         self.mac_to_port = {}
         # self.logger.disabled = True
         self.ml_model = None
@@ -100,12 +105,12 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.ip_option_decode = json.load(f)
         # Instantiate utilization queue for each cluster
         # Each host gets its own util queue to track its local utilization
-        self.util_queues = {cluster_name: [UtilizationQueue(self.topo_cluster_cfg["util_queue_length"]) for i in range(4)]
+        self.util_stacks = {cluster_name: [UtilizationStack(capacity=self.topo_cluster_cfg["util_stack_capacity"]) for i in range(4)]
                             for cluster_name in self.ML_SERVER_MAPPING.keys()}
         self.bandwidths = [self.topo_cluster_cfg["host_bandwidth"][str(i+1)] for i in range(12)]
-        self.round_trip_times = int([self.topo_cluster_cfg["host_latency"][str(i+1)] for i in range(12)].replace("ms",""))
+        self.round_trip_times = [int(self.topo_cluster_cfg["host_latency"][str(i+1)].replace("ms","")) for i in range(12)]
         self.packetlosses = [1e-6 for i in range(12)]
-        fieldnames = ["workload_type", "selected_server", "latency", "bandwidth", "time_handled"]
+        fieldnames = ["workload_type", "selected_server", "latency", "bandwidth", "packet_loss", "time_handled", "utilization"]
         fieldnames.extend([f"bandwidth_{i}" for i in range(4)])
         fieldnames.extend([f"packetloss_{i}" for i in range(4)])
         fieldnames.extend([f"rtt_{i}" for i in range(4)])
@@ -121,7 +126,7 @@ class SimpleSwitch13(app_manager.RyuApp):
             self.first_stage_ml_model = torch.load(self.topo_cluster_cfg['first_stage_lr_model_path'])
             self.first_stage_ml_model.eval()
         elif self.topo_cluster_cfg["first_stage_ml_type"] == "none":
-            self.logger.warning("No first stage ML model selected! Using random predictions")
+            self.logger.warning("No first stage ML model selected! Using round robin")
             self.first_stage_ml_model = None
         else:
             model_path = self.topo_cluster_cfg[f'first_stage_{self.topo_cluster_cfg["first_stage_ml_type"]}_model_path']
@@ -136,9 +141,12 @@ class SimpleSwitch13(app_manager.RyuApp):
                 raise FileNotFoundError("Cannot find ML model!")
             self.second_stage_ml_model = torch.load(self.topo_cluster_cfg['second_stage_lr_model_path'])
             self.second_stage_ml_model.eval()
-        elif self.topo_cluster_cfg["second_stage_ml_type"] == "none":
-            self.logger.warning("No second stage ML model selected! Using random predictions")
+        elif self.topo_cluster_cfg["second_stage_ml_type"] == "rr":
+            self.logger.warning("No second stage ML model selected! Using round robin")
             self.second_stage_ml_model = None
+        elif self.topo_cluster_cfg["second_stage_ml_type"] == "min":
+            self.logger.warning("Using minimum utilization")
+            self.second_stage_ml_model = LBMinResourceModel()
         else:
             model_path = self.topo_cluster_cfg[f'second_stage_{self.topo_cluster_cfg["second_stage_ml_type"]}_model_path']
             self.logger.info(f"Loading {model_path}")
@@ -423,6 +431,24 @@ class SimpleSwitch13(app_manager.RyuApp):
         highest value corresponding to the predicted
         server. Each index is mapped to the correct IP
         address of the server."""
+        # Quick and dirty normalization
+        avg_bw = sum(self.bandwidths)/len(self.bandwidths)
+        if avg_bw == 0:
+            avg_bw = 1
+        avg_pl = sum(self.packetlosses)/len(self.packetlosses)
+        if avg_pl == 0:
+            avg_pl = 1
+        avg_rtt = sum(self.round_trip_times)/len(self.round_trip_times)
+        if avg_rtt == 0:
+            avg_rtt = 1
+        divisor_array = np.array([
+            avg_bw,avg_bw,avg_bw,avg_bw,
+            avg_rtt,avg_rtt,avg_rtt,avg_rtt,
+            avg_pl,avg_pl,avg_pl,avg_pl,
+            1,1,1,1
+        ])
+        ml_input = ml_input / divisor_array
+        self.logger.info(ml_input)
         pred = self.second_stage_ml_model(
             torch.from_numpy(ml_input).float()).data.numpy()
         self.logger.info(f"Prediction tensor: {pred}")
@@ -485,21 +511,24 @@ class SimpleSwitch13(app_manager.RyuApp):
         # elif self.topo_cluster_cfg['second_stage_ml_type'] == 'rf':
         #     server = self.second_stage_predict(cluster_name, ml_input)
         elif self.topo_cluster_cfg['second_stage_ml_type'] == 'lr':
-            return self.second_stage_predict_using_lr(cluster_name, ml_input)
+            server = self.second_stage_predict_using_lr(cluster_name, ml_input)
         else:
             server = self.second_stage_predict(cluster_name, ml_input)
 
         # Pushes a '1' onto the util queue for the given server
         # Index in list calculated using mod function (four servers per cluster)
         self.logger.info(f"Server # in cluster: {(int(server[1]) - 1) % 4}")
-        self.update_all_util_queues(cluster_name, (int(server[1]) - 1) % 4, self.current_packet_power)
+        selected_utilization = self.util_stacks[cluster_name][(int(server[1]) - 1) % 4].get_utilization()
+        self.update_all_util_stacks(cluster_name, (int(server[1]) - 1) % 4, self.current_packet_power)
         self.logger.info(f"Selected server in cluster: {server}")
         data.update({
             "workload_type": cluster_name,
             "selected_server": server[0],
-            "latency": self.topo_cluster_cfg["host_latency"][str(server[1])],
+            "latency": self.round_trip_times[server[1]-1],
             "bandwidth": self.bandwidths[server[1]-1],
-            "time_handled": time.time()
+            "packet_loss": self.packetlosses[server[1]-1],
+            "time_handled": time.time(),
+            "utilization": selected_utilization
         })
         data.update({f"bandwidth_{i}": ml_input[i] for i in range(4)})
         data.update({f"packetloss_{i}": ml_input[4+i] for i in range(4)})
@@ -513,20 +542,18 @@ class SimpleSwitch13(app_manager.RyuApp):
         """Returns the calculated utilization for every queue"""
         all_utilizations = {}
         for cluster_name in self.ML_SERVER_MAPPING.keys():
-            for i, util_queue in enumerate(self.util_queues[cluster_name]):
-                all_utilizations[f"{cluster_name}_{i}"] = util_queue.get_utilization()
+            for i, util_stack in enumerate(self.util_stacks[cluster_name]):
+                all_utilizations[f"{cluster_name}_{i}"] = util_stack.get_utilization()
         return all_utilizations
 
-    def update_all_util_queues(self, cluster_name, server, n):
-        """Pushes back an empty value to the utilization queue to represent
-        one unit of time passing"""
-        for cluster, cluster_util_queue in self.util_queues.items():
+    def update_all_util_stacks(self, cluster_name, server, n):
+        for cluster, cluster_util_stack in self.util_stacks.items():
             for i in range(4):
                 if cluster == cluster_name and i == server:
-                    self.util_queues[cluster_name][server].util_put(1, n)
+                    self.util_stacks[cluster][i].util_push(3*n)
                 else:
-                    # Push back one item to represent one unit of time
-                    self.util_queues[cluster_name][server].util_put(0, 1)
+                    # Pop one active unit
+                    self.util_stacks[cluster][i].util_pop()
 
     def get_network_conditions(self, cluster_name, utils):
         """Returns a list of the throughput, packet loss, rtt,
@@ -546,14 +573,17 @@ class SimpleSwitch13(app_manager.RyuApp):
         return np.array(conditions)
 
     def fake_ml(self):
-        self.logger.info("Using random choice")
-        return random.choice(list(self.ML_WORKLOAD_MAPPING.values()))
+        self.logger.info("Using round robin")
+        # return random.choice(list(self.ML_WORKLOAD_MAPPING.values()))
+        return next(self.ROUND_ROBIN_ML_CLUSTER_MAPPING)
 
     def handle_control_packet(self, payload):
         """Updates the bandwidth table with values from control packet"""
-        self.bandwidths = [int.from_bytes(payload[i:i+4], 'big') for i in range(0, 48, 4)]
-        self.round_trip_times = [int.from_bytes(payload[i:i+4], 'big') for i in range(48, 48*2, 4)]
-        self.packetlosses = [int.from_bytes(payload[i:i+4], 'big') for i in range(48*2, len(payload), 4)]
+        # Adjust units
+        self.bandwidths = [float(int.from_bytes(payload[i:i+4], 'big'))/1000000 for i in range(0, 48, 4)]
+        if self.topo_cluster_cfg['live_bandwidth_polling']['use_ping']:
+            self.round_trip_times = [float(int.from_bytes(payload[i:i+4], 'big'))/1000 for i in range(48, 48*2, 4)]
+            self.packetlosses = [float(int.from_bytes(payload[i:i+4], 'big'))/1000000 for i in range(48*2, len(payload), 4)]
         self.logger.info(f"Updated bandwidths: {self.bandwidths}")
         self.logger.info(f"Updated round trip times: {self.round_trip_times}")
         self.logger.info(f"Updated packetlosses: {self.packetlosses}")

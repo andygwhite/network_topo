@@ -14,7 +14,10 @@ class UtilizationQueue(Queue):
         """put method that allows for multiple insertions and manages pops"""
         if(self.qsize() + n >= self.maxsize):
             for i in range(int(n)):
-                self.sum -= self.get()
+                pop_item = self.get()
+                # if pop_item == 1:
+                #     print("Dumped a 1")
+                self.sum -= pop_item
         for i in range(int(n)):
             self.sum += item
             self.put(item)
@@ -22,4 +25,4 @@ class UtilizationQueue(Queue):
     def get_utilization(self):
         if self.qsize() == 0:
             return 0
-        return self.sum / self.maxsize
+        return self.sum / self.qsize()

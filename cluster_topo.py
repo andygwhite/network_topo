@@ -1,7 +1,9 @@
 import csv
 import multiprocessing
 import random
+import shutil
 import time
+import click
 from mininet.net import Mininet
 from mininet.node import RemoteController
 from mininet.cli import CLI
@@ -68,7 +70,7 @@ class ClusterTopo( Topo ):
         self.addLink(packet_generator, switch)
         self.addLink(cross_traffic_generator, switch)
 
-    def __init__(self, cfg_filename='./topo_cluster_cfg.json'):
+    def __init__(self, first=False, second=False, cfg_filename='./topo_cluster_cfg.json'):
         """Wrapper for single topo init.
         Allows for specifying number of servers"""
         with open(cfg_filename, 'r') as f:
@@ -106,6 +108,12 @@ class ClusterTopo( Topo ):
         # pcap_files.update(self.cfg["first_stage_experiment_files"])
         # self.packet_generator = PacketGenerator(pcap_files)
         # print(self.packet_generator.packet_lists)
+        if first:
+            self.stage_one_exp()
+            self.quit()
+        elif second:
+            self.stage_two_exp()
+            self.quit()
         choice = None
         while True:
             print('Please select an option')
@@ -174,6 +182,7 @@ class ClusterTopo( Topo ):
         print(f"Cross traffic enabled: {self.cfg['cross_traffic']['enabled']}")
         if self.cfg["cross_traffic"]["enabled"]:
             print(f"Cross traffic enabled in mode {self.cfg['cross_traffic']['mode']}")
+            self.cross_traffic_flag = True
             p1 = multiprocessing.Process(target = self.generate_cross_traffic)
             if self.cfg["cross_traffic"]["mode"] == "before":
                 p1.start()
@@ -195,13 +204,11 @@ class ClusterTopo( Topo ):
             'memory': sum(packet_list_sizes)}
         print(end_of_exp)
         # Get the workload prediction for each packet in experiment.csv
-        prediction_results = [
-            row[0] for row in self.get_experiment_results(
-            self.cfg["experiment_results"], end_of_exp['memory'])]
+        experiment_results = self.get_experiment_results( self.cfg["experiment_results"], end_of_exp['memory'])
         for prediction_result in ["cpu", "network", "memory"]:
-            results['cpu'][prediction_result] = prediction_results[1:end_of_exp['cpu']].count(prediction_result)
-            results['network'][prediction_result] = prediction_results[end_of_exp['cpu']:end_of_exp['network']].count(prediction_result)
-            results['memory'][prediction_result] = prediction_results[end_of_exp['network']:end_of_exp['memory']].count(prediction_result)
+            results['cpu'][prediction_result] = experiment_results["workload_type"][1:end_of_exp['cpu']].count(prediction_result)
+            results['network'][prediction_result] = experiment_results["workload_type"][end_of_exp['cpu']:end_of_exp['network']].count(prediction_result)
+            results['memory'][prediction_result] = experiment_results["workload_type"][end_of_exp['network']:end_of_exp['memory']].count(prediction_result)
         print(pd.DataFrame.from_dict(results).to_markdown())
         total_count = 0
         total_correct = 0
@@ -213,9 +220,23 @@ class ClusterTopo( Topo ):
         print("Correct:", total_correct)
         print("Total count:", total_count)
         print(f"Total Accuracy: {100*total_correct/total_count}%")
+        summary_dict = {
+            f"avg_{param}": sum(experiment_results[param])/len(experiment_results[param])
+            for param in ["latency", "bandwidth", "utilization", "packet_loss"]}
+        summary_dict["seconds_per_packet"] = (experiment_results["time_handled"][-1]-experiment_results["time_handled"][0])/len(experiment_results["time_handled"])
+        summary_dict["accuracy"] = 100*total_correct/total_count
+        summary_dict["confusion_matrix"] = results
+        summary_dict["cfg"] = self.cfg
+        with open('./summary.json', 'w') as f:
+            json.dump(summary_dict, f, indent=6)
         if self.cfg["cross_traffic"]["enabled"]:
             p1.terminate()
+            self.cross_traffic_flag = False
             self.net.get('ctgen').cmd('pkill -9 iperf3',shell=True)
+        try:
+            self.move_results_to_savedir("first")
+        except Exception as err:
+            print("Could not move results files:", err)
         return
 
     def stage_two_exp(self):
@@ -231,6 +252,7 @@ class ClusterTopo( Topo ):
             p2.start()
         if self.cfg["cross_traffic"]["enabled"]:
             print(f"Cross traffic enabled in mode {self.cfg['cross_traffic']['mode']}")
+            self.cross_traffic_flag = True
             p1 = multiprocessing.Process(target = self.generate_cross_traffic)
             if self.cfg["cross_traffic"]["mode"] == "before":
                 p1.start()
@@ -244,18 +266,60 @@ class ClusterTopo( Topo ):
         output = p.communicate()[0].decode('utf-8').split('\n')[-2]
         print(output)
         total_packets = sum(int(v) for v in output.split(','))
-        results = self.get_experiment_results(self.cfg["experiment_results"], total_packets)
+        experiment_results = self.get_experiment_results(self.cfg["experiment_results"], total_packets)
         if self.cfg["live_bandwidth_polling"]["enabled"]:
             print("Terminating control packets")
             self.poll_flag = False
             p2.terminate()
         if self.cfg["cross_traffic"]["enabled"]:
             print("Terminating cross traffic")
+            self.cross_traffic_flag = False
             p1.terminate()
             self.net.get('ctgen').cmd('pkill -9 iperf3',shell=True)
+        summary_dict = {
+            f"avg_{param}": sum(experiment_results[param])/len(experiment_results[param])
+            for param in ["latency", "bandwidth", "utilization", "packet_loss"]}
+        summary_dict["seconds_per_packet"] = (experiment_results["time_handled"][-1]-experiment_results["time_handled"][0])/len(experiment_results["time_handled"])
+        print(json.dumps(summary_dict, indent=6))
+        summary_dict["cfg"] = self.cfg
+        with open('./summary.json', 'w') as f:
+            json.dump(summary_dict, f, indent=6)
+        try:
+            self.move_results_to_savedir("second")
+        except Exception as err:
+            print("Could not move results files:", err)
+
+    def move_results_to_savedir(self, experiment_stage):
+        """Helper function to move all experiment files into a directory
+        labeled with the experimental parameters"""
+        ct_enabled = self.cfg["cross_traffic"]["enabled"]
+        nwp_enabled = self.cfg["live_bandwidth_polling"]["enabled"]
+        dir_name = f"""\
+exp_1s_{self.cfg["first_stage_ml_type"]}_2s_{self.cfg["second_stage_ml_type"]}_\
+ct_{self.cfg["cross_traffic"]["enabled"]}_\
+{"ctmode_" + self.cfg["cross_traffic"]["mode"] + "_" if ct_enabled else ''}\
+{"ctmachines_" + str(self.cfg["cross_traffic"]["parallel_machines"]) + "_" if ct_enabled else ''}\
+nwp_{self.cfg["live_bandwidth_polling"]["enabled"]}_ping_{self.cfg["live_bandwidth_polling"]["use_ping"]}"""
+        dir_name = os.path.join(
+            self.cfg["experiment_results_directory"], experiment_stage, dir_name)
+        # Make all the directories if not present
+        for path in [
+            self.cfg["experiment_results_directory"],
+            os.path.join(self.cfg["experiment_results_directory"], experiment_stage),
+            dir_name]:
+                if not os.path.exists(path):
+                    os.mkdir(path)
+        experiment_files = ["./experiment.csv", "./ryu.log", "./summary.json"]
+        cross_traffic_logs = [
+            f"./cross_traffic_log_10.0.0.{i}.log" for i in range(1, self.k + 1)
+            if os.path.exists(f"./cross_traffic_log_10.0.0.{i}.log")
+        ]
+        experiment_files.extend(cross_traffic_logs)
+        for file in experiment_files:
+            shutil.move(file, os.path.join(dir_name, file))
 
     def get_experiment_results(
-            self, file, expected_lines, max_wait_seconds=200,
+            self, file, expected_lines, max_wait_seconds=500,
             buffer_time_seconds=1):
         """Helper function which returns whenever the experiment.csv file
         has all the lines needed according to the validation set sizing.
@@ -274,6 +338,20 @@ class ClusterTopo( Topo ):
                 print(f"Experiment file not finished (on line {len(results)}), buffering for 1s")
                 time.sleep(1)
                 results.extend(f.readlines())
+        # Format results for easier processing
+        results = [result.split(',') for result in results]
+        print(results[0])
+        formatted_results = {
+            'workload_type': [x[0] for x in results],
+            'selected_server': [x[1] for x in results],
+            'latency': [float(x[2]) for x in results],
+            'bandwidth': [float(x[3]) for x in results],
+            'packet_loss': [float(x[4]) for x in results],
+            'time_handled': [float(x[5]) for x in results],
+            'utilization': [float(x[6]) for x in results],
+        }
+        return formatted_results
+
 
     def quit(self):
         """Necessary to let Mininet clean itself for next run"""
@@ -292,7 +370,7 @@ class ClusterTopo( Topo ):
             with open(f'./cross_traffic_log_{ip}.log', 'w') as f:
                 f.write('')
         time.sleep(delay)
-        if self.cfg['cross_traffic']['parallel_machines'] < self.k + 1:
+        if self.cfg['cross_traffic']['parallel_machines'] < self.k:
             while self.cross_traffic_flag:
                 for ip in random.sample(ip_list, self.cfg['cross_traffic']['parallel_machines']):
                     iperf_cmd = f'''\
@@ -319,19 +397,23 @@ iperf3 -i {self.cfg["cross_traffic"]["logging_interval"]} \
         interval = self.cfg["live_bandwidth_polling"]["interval"]
         while self.poll_flag:
             bandwidths = self.check_bandwidths()
-            round_trip_times, packetlosses = self.check_rtt_packetloss()
+            if self.cfg['live_bandwidth_polling']['use_ping']:
+                round_trip_times, packetlosses = self.check_rtt_packetloss()
+                if len(round_trip_times) != 48:
+                    print(f"ERROR: {round_trip_times}")
+                if len(packetlosses) != 48:
+                    print(f"ERROR: {packetlosses}")
             if len(bandwidths) != 48:
                 print(f"ERROR: {bandwidths}")
-            if len(round_trip_times) != 48:
-                print(f"ERROR: {round_trip_times}")
-            if len(packetlosses) != 48:
-                print(f"ERROR: {packetlosses}")
-            all_data = b''.join([bandwidths, round_trip_times, packetlosses])
-            print(all_data)
+            if self.cfg['live_bandwidth_polling']['use_ping']:
+                all_data = b''.join([bandwidths, round_trip_times, packetlosses])
+            else:
+                all_data = bandwidths
+            # print(all_data)
             cmd = f"scapy -H << here\nsend(IP(dst='10.0.0.111')/ICMP()/{str(all_data).replace('`', '')})\nhere"
-            print(cmd)
+            # print(cmd)
             p = self.net.get('pgen').popen(cmd, shell=True)
-            print(p.communicate())
+            # print(p.communicate())
             time.sleep(interval)
 
     def check_bandwidths(self):
@@ -340,10 +422,11 @@ iperf3 -i {self.cfg["cross_traffic"]["logging_interval"]} \
         print("Checking Bandwidths")
         commands = []
         for i, host in enumerate(self.hosts):
-            commands.append(host.popen(f"./bwmonitor h{i+1}-eth0 0.1 0.1", shell=True, stdout=subprocess.PIPE))
+            commands.append(host.popen(f"./bwmonitor h{i+1}-eth0 0.5 0.5", shell=True, stdout=subprocess.PIPE))
         bandwidths = []
         for command in commands:
             tmp = (command.communicate()[0].decode('utf-8').strip())
+            # print(tmp)
             tmp = int(tmp) if tmp != '' else 0
             bandwidths.append(tmp)
         bandwidths = b''.join([int.to_bytes(bw, 4, 'big') for bw in bandwidths])
@@ -362,6 +445,7 @@ iperf3 -i {self.cfg["cross_traffic"]["logging_interval"]} \
         packetlosses = []
         for command in commands:
             output = command.communicate()[0].decode('utf-8').split('\n')
+            # print(output)
             # Convert round_trip_times to microseconds, turn into integer for transmit
             round_trip_times.append(int(float(output[-2].split(' ')[3].split('/')[0])*1000))
             # Convert packetlosses to packets per million for transmit
@@ -370,6 +454,14 @@ iperf3 -i {self.cfg["cross_traffic"]["logging_interval"]} \
         packetlosses = b''.join([int.to_bytes(pl, 4, 'big') for pl in packetlosses])
         return round_trip_times, packetlosses
 
+
+@click.option("-f", "--first", is_flag=True, help="Run a first stage exp and close")
+@click.option("-s", "--second", is_flag=True, help="Run a second stage exp and close")
+@click.command()
+def cli(first, second):
+    topo = ClusterTopo(first, second)
+
+
 if __name__ == "__main__":
-    topo = ClusterTopo()
+    cli()
 
