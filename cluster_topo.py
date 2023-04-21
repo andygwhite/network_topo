@@ -1,4 +1,5 @@
 import csv
+from datetime import datetime
 import multiprocessing
 import random
 import shutil
@@ -90,7 +91,8 @@ class ClusterTopo( Topo ):
         # self.hosts.append(self.net.get('ctgen'))
         self.experiment_csv_current_line = 0
         print("Increasing MTU size")
-        for i in range(i,  k + 3):
+
+        for i in range(1,  k + 3):
             p = subprocess.Popen(f"sudo ifconfig s1-eth{i} mtu 65535", shell=True, stdout=subprocess.PIPE)
             if p.communicate()[1] is not None:
                 print(f"[WARNING]: Failed to change MTU size on s1-eth{i}. Packets must not exceed 1500 bytes")
@@ -157,6 +159,7 @@ class ClusterTopo( Topo ):
             print('\tq: Return')
             print('\t1: First Stage Experiment')
             print('\t2: Second Stage Experiment')
+            print('\t3: Cross Traffic Experiment')
             try:
                 choice = input()
             except EOFError:
@@ -167,10 +170,14 @@ class ClusterTopo( Topo ):
                 self.stage_one_exp()
             elif choice == '2':
                 self.stage_two_exp()
+            elif choice == '3':
+                self.cross_traffic_exp()
+            else:
+                print(choice, 'is not a valid option')
 
     def clear_experiment_logs(self):
         """Helper function to clear all logs"""
-        for log in ["./ryu.log", "./experiment.csv"]:
+        for log in ["./ryu.log", "./experiment.csv", "./top.log"]:
             with open(log, 'w') as f:
                 f.write('')
 
@@ -189,6 +196,9 @@ class ClusterTopo( Topo ):
                 time.sleep(1)
             elif self.cfg["cross_traffic"]["mode"] == "after":
                 p1.start(delay=1)
+        if self.cfg["controller_usage_logging"]:
+            usage_logging = multiprocessing.Process(target=self.log_controller_usage)
+            usage_logging.start()
         p = self.net.get('pgen').popen(
             ['python3', './packet_generator.py', 
              "-f", self.cfg["first_stage_experiment_files"]["cpu"],
@@ -229,6 +239,8 @@ class ClusterTopo( Topo ):
         summary_dict["cfg"] = self.cfg
         with open('./summary.json', 'w') as f:
             json.dump(summary_dict, f, indent=6)
+        if self.cfg["controller_usage_logging"]:
+            usage_logging.terminate()
         if self.cfg["cross_traffic"]["enabled"]:
             p1.terminate()
             self.cross_traffic_flag = False
@@ -246,6 +258,9 @@ class ClusterTopo( Topo ):
         print(f"Running 2nd stage experiment")
         print(f"Live bandwidth polling enabled: {self.cfg['live_bandwidth_polling']['enabled']}")
         print(f"Cross traffic enabled: {self.cfg['cross_traffic']['enabled']}")
+        if self.cfg["controller_usage_logging"]:
+            usage_logging = multiprocessing.Process(target=self.log_controller_usage)
+            usage_logging.start()
         if self.cfg["live_bandwidth_polling"]["enabled"]:
             p2 = multiprocessing.Process(target=self.network_condition_polling)
             self.poll_flag = True
@@ -267,6 +282,8 @@ class ClusterTopo( Topo ):
         print(output)
         total_packets = sum(int(v) for v in output.split(','))
         experiment_results = self.get_experiment_results(self.cfg["experiment_results"], total_packets)
+        if self.cfg["controller_usage_logging"]:
+            usage_logging.terminate()
         if self.cfg["live_bandwidth_polling"]["enabled"]:
             print("Terminating control packets")
             self.poll_flag = False
@@ -289,7 +306,61 @@ class ClusterTopo( Topo ):
         except Exception as err:
             print("Could not move results files:", err)
 
-    def move_results_to_savedir(self, experiment_stage):
+    def cross_traffic_exp(self):
+        """Report the affect of using cross traffic on a single link"""
+        self.clear_experiment_logs()
+        print(f"Running cross traffic experiment")
+        print(f"Cross traffic enabled: {self.cfg['cross_traffic']['enabled']}")
+        if self.cfg["cross_traffic"]["enabled"]:
+            print(f"Cross traffic enabled in mode {self.cfg['cross_traffic']['mode']}")
+            self.cross_traffic_flag = True
+            p1 = multiprocessing.Process(target = self.generate_cross_traffic)
+            p1.start()
+        # Log all experiment packets and time received
+        tcpdump_sender = self.net.get('pgen').popen("tcpdump -c 5970 -U -tttt not arp > ./tcpdump_sender.log", shell=True)
+        tcpdump_receiver = self.hosts[0].popen("tcpdump -c 5970 -U -tttt not ip host 10.0.0.14 and not arp > ./tcpdump_receiver.log", shell=True)
+        p = self.net.get('pgen').popen(
+            ['python3', './packet_generator.py', "-f",
+             self.cfg["cross_traffic_experiment_file"], '-c',
+             str(self.cfg["experiment_packet_count"])], stdout=subprocess.PIPE)
+        output = p.communicate()[0].decode('utf-8').split('\n')[-2]
+        print(output)
+        # Buffer interval to finish tcpdump logging
+        while int(subprocess.check_output('cat tcpdump_receiver.log | wc -l',shell=True)) < int(output):
+            print(f"Buffering: {int(subprocess.check_output('cat tcpdump_receiver.log | wc -l',shell=True))}")
+            time.sleep(1)
+        # tcpdump_receiver.kill()
+        # tcpdump_sender.kill()
+        total_packets_sent = sum(int(v) for v in output.split(','))
+        if self.cfg["cross_traffic"]["enabled"]:
+            print("Terminating cross traffic")
+            self.cross_traffic_flag = False
+            p1.terminate()
+            self.net.get('ctgen').cmd('pkill -9 iperf3',shell=True)
+        # Parse the log file for experiment results
+        with open('./tcpdump_sender.log') as f:
+            lines = f.readlines()
+        sent_packet_times = [
+            datetime.strptime(' '.join(line.split(' ')[0:2]), "%Y-%m-%d %H:%M:%S.%f") for line in lines]
+        with open('./tcpdump_receiver.log') as f:
+            lines = f.readlines()
+        received_packet_times = [
+            datetime.strptime(' '.join(line.split(' ')[0:2]), "%Y-%m-%d %H:%M:%S.%f") for line in lines]
+        if len(sent_packet_times) != len(received_packet_times):
+            print(f"Sizes not same! {len(sent_packet_times)} {len(received_packet_times)}")
+        else:
+            latencies = [(received_packet_times[i] - sent_packet_times[i]).total_seconds() for i in range(len(sent_packet_times))]
+        summary_dict = {"avg_latency": sum(latencies)/len(latencies)}
+        print(json.dumps(summary_dict, indent=6))
+        summary_dict["cfg"] = self.cfg
+        with open('./summary.json', 'w') as f:
+            json.dump(summary_dict, f, indent=6)
+        try:
+            self.move_results_to_savedir("cross_traffic", experiment_files=['./tcpdump_sender.log', './tcpdump_receiver.log', './ryu.log', './summary.json'])
+        except Exception as err:
+            print("Could not move results files:", err)
+
+    def move_results_to_savedir(self, experiment_stage, experiment_files=["./experiment.csv", "./ryu.log", "./summary.json", "./top.log"]):
         """Helper function to move all experiment files into a directory
         labeled with the experimental parameters"""
         ct_enabled = self.cfg["cross_traffic"]["enabled"]
@@ -309,14 +380,16 @@ nwp_{self.cfg["live_bandwidth_polling"]["enabled"]}_ping_{self.cfg["live_bandwid
             dir_name]:
                 if not os.path.exists(path):
                     os.mkdir(path)
-        experiment_files = ["./experiment.csv", "./ryu.log", "./summary.json"]
         cross_traffic_logs = [
             f"./cross_traffic_log_10.0.0.{i}.log" for i in range(1, self.k + 1)
             if os.path.exists(f"./cross_traffic_log_10.0.0.{i}.log")
         ]
         experiment_files.extend(cross_traffic_logs)
         for file in experiment_files:
-            shutil.move(file, os.path.join(dir_name, file))
+            if os.path.exists(file):
+                shutil.move(file, os.path.join(dir_name, file))
+            else:
+                print(f"Could not find file {file}")
 
     def get_experiment_results(
             self, file, expected_lines, max_wait_seconds=500,
@@ -381,6 +454,9 @@ iperf3 -i {self.cfg["cross_traffic"]["logging_interval"]} \
                     print(iperf_cmd)
                     p = self.net.get('ctgen').popen(iperf_cmd, shell=True)
                 p.communicate()
+            return
+        if self.cfg['cross_traffic']['mode'] == 'single':
+            ip_list = ip_list[0:1]
         for ip in ip_list:
             iperf_cmd = f'''\
 iperf3 -i {self.cfg["cross_traffic"]["logging_interval"]} \
@@ -453,6 +529,10 @@ iperf3 -i {self.cfg["cross_traffic"]["logging_interval"]} \
         round_trip_times = b''.join([int.to_bytes(lt, 4, 'big') for lt in round_trip_times])
         packetlosses = b''.join([int.to_bytes(pl, 4, 'big') for pl in packetlosses])
         return round_trip_times, packetlosses
+
+    def log_controller_usage(self):
+        while True:
+            subprocess.call(f"top -b -n 1 | grep ryu-manager >> {self.cfg['controller_usage_log_path']}", shell=True)
 
 
 @click.option("-f", "--first", is_flag=True, help="Run a first stage exp and close")

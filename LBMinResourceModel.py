@@ -6,8 +6,7 @@ class LBMinResourceModel:
     load balances instead of using ML.
     Configurable using the lbalgo_cfg.json file. Can do absolute minimum or
     round robin with a max utilization cap"""
-    def __init__(self, round_robin_cluster_mapping):
-        self.round_robin_cluster_mapping = round_robin_cluster_mapping
+    def __init__(self):
         pass
 
     def predict(self, input_arr):

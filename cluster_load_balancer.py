@@ -141,7 +141,7 @@ class SimpleSwitch13(app_manager.RyuApp):
                 raise FileNotFoundError("Cannot find ML model!")
             self.second_stage_ml_model = torch.load(self.topo_cluster_cfg['second_stage_lr_model_path'])
             self.second_stage_ml_model.eval()
-        elif self.topo_cluster_cfg["second_stage_ml_type"] == "rr":
+        elif self.topo_cluster_cfg["second_stage_ml_type"] == "none":
             self.logger.warning("No second stage ML model selected! Using round robin")
             self.second_stage_ml_model = None
         elif self.topo_cluster_cfg["second_stage_ml_type"] == "min":
@@ -272,8 +272,9 @@ class SimpleSwitch13(app_manager.RyuApp):
                     datapath, in_port, ip_header,
                     parser, dst_mac, src_mac, msg, ofproto)
                 self.logger.info("TCP packet handled: " + str(packet_handled))
-                if packet_handled:
-                    return
+                return
+                # if packet_handled:
+                #     return
             elif ip_header.dst == '10.0.0.111':
                 packet_handled = self.handle_control_packet(pkt.protocols[-1].data.data)
 
@@ -327,13 +328,10 @@ class SimpleSwitch13(app_manager.RyuApp):
         while i < len(options):
             if options[i] == 0:
                 break
-            # print(f"Option type {options[i]}")
             opt_size = options[i + 1]
-            # print(f"Option size {opt_size}")
             if opt_size < 3:
                 raise Exception("Invalid Options Size!")
             split_list.append(options[i:i+opt_size])
-            # print("Appending list", options[i:i+opt_size])
             i = i+opt_size
         return split_list
 
@@ -341,21 +339,26 @@ class SimpleSwitch13(app_manager.RyuApp):
         """Use ML on the IP header to determine the correct output cluster.
         Returns first host by default if there is not a good input in the ip_header"""
         if not ip_header.option:
-            self.logger.warning("Options Not Found")
-            return self.SERVER1_IP, self.SERVER1_PORT
-        try:
-            options = self.split_options(list(ip_header.option))
-        except Exception as err:
-            print(f"[WARNING]: {err}")
-            return self.SERVER1_IP, self.SERVER1_PORT
+            raise Exception("Options Not Found")
+        options = self.split_options(list(ip_header.option))
         self.logger.info(options)
         options_organized = {}
         for opt in options:
             if str(opt[0]) not in self.ip_option_decode:
-                print("[WARNING]: Info Type Not Recognized!")
-                return self.SERVER1_IP, self.SERVER1_PORT
+                raise Exception("Info Type Not Recognized")
             self.logger.info(f"Option {opt} loaded: {self.ip_option_decode[str(opt[0])]['name']}, value: {str(opt[2])}")
             options_organized[self.ip_option_decode[str(opt[0])]['name']] = float(opt[2])
+        # Check all of the options inputs
+        if options_organized['category'] > 7:
+            raise Exception(f"Invalid Category Value of {options_organized['category']}")
+        if options_organized['permissions priority'] // 16 > 3:
+            raise Exception(f"Invalid Permissions Value of {options_organized['permissions priority'] // 16}")
+        if options_organized['permissions priority'] % 16 > 7:
+            raise Exception(f"Invalid Priority Value of {options_organized['permissions priority'] % 16}")
+        if options_organized['timestamp'] % 16 > 3:
+            raise Exception(f"Invalid Time of Day Value of {options_organized['timestamp'] % 16}")
+        if options_organized['power'] > 7:
+            raise Exception(f"Invalid Power Value of {options_organized['power']}")
         # If we made it this far, we can actually use the options
         # First need to process them into a numpy array
         # Use one hot encoding
@@ -406,9 +409,6 @@ class SimpleSwitch13(app_manager.RyuApp):
             return self.first_stage_predict_using_lr(ml_input)
         else:
             return self.first_stage_predict_using_sklearn(ml_input)
-        if self.fake_ml(ml_input) == 2:
-            return self.SERVER2_IP, self.SERVER2_PORT
-        return self.SERVER1_IP, self.SERVER1_PORT
 
     def first_stage_predict_using_lr(self, ml_input):
         """Uses ML Model to predict target server.
@@ -606,8 +606,16 @@ class SimpleSwitch13(app_manager.RyuApp):
             server_dst_ip, server_out_port = (
                 ip_header.dst, int(ip_header.dst.replace('10.0.0.', '')))
         else:
-            server_dst_ip, server_out_port = self.determine_output_host(
-                ip_header, self.determine_output_cluster(ip_header))
+            if self.topo_cluster_cfg['single_link_mode']:
+                server_dst_ip, server_out_port = ('10.0.0.1', 1)
+            else:
+                try:
+                    server_dst_ip, server_out_port = self.determine_output_host(
+                        ip_header, self.determine_output_cluster(ip_header))
+                except Exception as err:
+                    self.logger.error(f"Error encountered: {err}")
+                    self.logger.info("Dropping packet")
+                    return packet_handled
         self.logger.info(f"Sending to server {server_dst_ip} on port {server_out_port}")
         actions = [parser.OFPActionSetField(ipv4_dst=server_dst_ip),
                     parser.OFPActionOutput(server_out_port)]
